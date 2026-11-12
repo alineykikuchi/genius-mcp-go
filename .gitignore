@@ -1,0 +1,11 @@
+# binários
+/server
+/genius-mcp-go
+*.exe
+# ambiente local
+.env
+.env.*
+# editores
+.idea/
+.vscode/
+.DS_Store
