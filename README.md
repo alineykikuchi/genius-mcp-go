@@ -11,6 +11,7 @@ autenticação com o token do usuário ME e ligação ao agente pelo Genius Back
 | `esg_itens_do_pedido` | Passo 1 da estimativa de CO2. Lê o pedido, a requisição ou a cotação no ME-DataHub e devolve fornecedor, local de entrega e itens. |
 | `esg_estimar_co2_do_pedido` | Passo 2. Recebe o NAICS e o peso de cada item (classificados pelo Genius) e calcula kg CO2e de produto e de transporte, com as premissas. |
 | `esg_recomendar_fornecedores` | Busca fornecedores alternativos para os itens de um pedido, requisição ou cotação no recomendador do ME-DataHub e reordena a lista pelo CO2 do frete (distância até o local de entrega). |
+| `esg_precificar_carbono` | Converte o CO2e estimado em valor em reais (preço de referência de R$ 500 por tonelada, ou o informado pelo usuário) e compara de 2 a 5 alternativas pelo custo com carbono (preço + carbono), com o preço de virada. |
 
 ## Guia rápido: estimativa de CO2 de um pedido, requisição ou cotação
 
@@ -54,6 +55,35 @@ Limites:
 - O CO2 do produto não entra na comparação: no método por gasto ele não diferencia fornecedores do mesmo item. O que muda entre fornecedores é o frete.
 - O CO2 só reordena os `top_n` candidatos que o recomendador devolveu; não traz para a lista quem ficou fora desse corte.
 - A busca é por palavras da descrição do item, no máximo 12 alternativas por chamada, somando todos os itens.
+
+## Guia rápido: precificação do carbono
+
+A tool `esg_precificar_carbono` converte o CO2e estimado em reais, para o comprador comparar alternativas pelo **custo com carbono** (preço + carbono) e não só pelo preço. O valor do carbono é uma **referência para comparar**: não é cobrado no pedido.
+
+**1. Custo de carbono de um documento.** No Genius, peça: **"qual o custo de carbono do pedido 29594155?"**
+
+1. O Genius estima o CO2e do documento (`esg_itens_do_pedido` e `esg_estimar_co2_do_pedido`, como no primeiro guia).
+2. O Genius chama `esg_precificar_carbono` com `co2e_kg` (o `total_kg` da estimativa) e `valor_pedido_brl` (só quando a moeda do documento é BRL).
+3. A resposta traz o CO2e, o valor do carbono, o custo com carbono e o peso do carbono sobre o valor do pedido. Exemplo: "O pedido emite cerca de 9.120 kg de CO2e. A R$ 500/t, isso equivale a R$ 4.560,20 de carbono, cerca de 10% do valor do pedido. É um valor de referência (EU ETS) e não é cobrado."
+
+**2. Comparação, com recálculo.** Peça: **"compare o fornecedor A (R$ 10.000, 1.200 kg de CO2e) com o fornecedor B (R$ 10.300, 300 kg de CO2e)"**.
+
+1. O Genius chama `esg_precificar_carbono` com `alternativas` (de 2 a 5, cada uma com `rotulo`, `valor_brl` e `co2e_kg`). A primeira é a referência: o pedido ou o fornecedor atual.
+2. A resposta traz, para cada alternativa contra a referência, a diferença de preço, de CO2e e de custo com carbono, o **preço de virada** (o preço do carbono em que as duas empatam) e a alternativa recomendada. No exemplo: B custa R$ 300 a mais, emite 75% menos e fica R$ 150 à frente; compensa enquanto o carbono valer mais de R$ 333/t.
+3. Em seguida, peça: **"recalcule com R$ 200 por tonelada"**. O Genius chama a tool de novo com `preco_carbono_brl_t` = 200, e B deixa de compensar: fica R$ 120 atrás de A (R$ 10.360 contra R$ 10.240 de custo com carbono).
+
+**3. Preço em outra moeda.** Peça: **"use US$ 50 por tonelada"**. A tool não converte moeda: o Genius pede o preço em **reais por tonelada** (ex.: R$ 250/t) e não chama a tool.
+
+O que é dado real e o que é premissa:
+
+| Dado | Origem |
+|---|---|
+| CO2e e valor do documento | Saída de `esg_estimar_co2_do_pedido`, que lê o documento no ME-DataHub. Na comparação, o preço de cada alternativa é informado pelo comprador. |
+| Preço do carbono | Referência fixa de R$ 500 por tonelada de CO2e, baseada no EU ETS, configurável em `PRECO_CARBONO_BRL_T`. O preço informado pelo usuário vale só para a consulta. |
+
+Regras da resposta: os campos terminados em `_fmt` já vêm formatados (o modelo não refaz contas) e o campo `como_responder` diz como montar a resposta em cada caso. Preço fora da faixa de R$ 10 a R$ 5.000/t gera aviso, mas a conta é feita. Alternativa sem valor ou sem CO2e fica fora da comparação, com aviso.
+
+Limites: não há cotação automática do carbono nem conversão de moeda, e o preço informado não fica salvo por cliente. A especificação completa está em `docs/precificacao-carbono/spec-precificacao-carbono.md`.
 
 ## Componentes externos
 
@@ -114,6 +144,7 @@ curl -s http://localhost:8080/mcp \
 | `DATAHUB_TOKEN_URL` | `https://trunk.datahub.me.com.br/oauth/token` | Endpoint de token do ME-DataHub. |
 | `TENANT_CLAIM` | (vazio) | Nome da claim do token do Genius que traz o IdMain do usuário. Vazio tenta `tenantId`, `tenant_id`, `idMain`, `id_main`, `workflowId`, `workflow_id`. |
 | `TENANT_FILTRO` | (ligado) | `off` desliga o filtro por tenant. Só para demonstração: a tool passa a ler pedidos de qualquer cliente. |
+| `PRECO_CARBONO_BRL_T` | `500` | Preço de referência do carbono, em reais por tonelada de CO2e. |
 
 ## 1. Subir no GitHub
 
