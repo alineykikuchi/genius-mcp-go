@@ -20,7 +20,7 @@ import (
 	"genius-mcp-go/internal/token"
 )
 
-// Estimativa de CO2 de um pedido (spec: docs/spec-tool1-estimativa-co2_1.md).
+// Estimativa de CO2 de um pedido, requisição ou cotação (spec: docs/spec-tool1-estimativa-co2_1.md).
 //
 // São duas tools, porque quem classifica o item (NAICS e peso) é o modelo do
 // próprio Genius, e não uma IA chamada daqui:
@@ -45,15 +45,15 @@ type co2Deps struct {
 func registerCO2(s *mcp.Server, d co2Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "esg_itens_do_pedido",
-		Description: "Passo 1 da análise de impacto ESG / pegada de carbono (CO2) de um pedido de compra. " +
-			"Lê o pedido no ME (dados reais, da empresa do usuário) e devolve fornecedor, local de entrega e itens. " +
+		Description: "Passo 1 da análise de impacto ESG / pegada de carbono (CO2) de um pedido, requisição ou cotação de compra. " +
+			"Lê o documento no ME (dados reais, da empresa do usuário) e devolve fornecedor, local de entrega e itens. " +
 			"Depois de chamar esta tool, classifique CADA item em um código NAICS 2017 de 6 dígitos e estime o peso " +
-			"em kg de UMA unidade do item (na unidade de medida do pedido), e então chame esg_estimar_co2_do_pedido.",
+			"em kg de UMA unidade do item (na unidade de medida do documento), e então chame esg_estimar_co2_do_pedido.",
 	}, d.itensDoPedido)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "esg_estimar_co2_do_pedido",
-		Description: "Passo 2 da análise de impacto ESG de um pedido: calcula a estimativa de kg CO2e (produto + transporte) " +
+		Description: "Passo 2 da análise de impacto ESG de um pedido, requisição ou cotação: calcula a estimativa de kg CO2e (produto + transporte) " +
 			"e a relação custo x CO2. Exige a classificação de cada item (NAICS 2017 de 6 dígitos, peso em kg por unidade e " +
 			"confiança de 0 a 1), feita por você a partir de esg_itens_do_pedido. Se a resposta trouxer itens com " +
 			"naics_invalido, escolha um dos naics_candidatos e chame de novo. Ao responder ao usuário, apresente sempre as premissas.",
@@ -63,7 +63,8 @@ func registerCO2(s *mcp.Server, d co2Deps) {
 // ---- passo 1: itens do pedido ----------------------------------------------
 
 type ItensIn struct {
-	Pedido string `json:"pedido" jsonschema:"número do pedido no ME ou número do pedido no cliente (ERP)"`
+	Tipo   string `json:"tipo,omitempty" jsonschema:"pedido (padrão), requisicao ou cotacao"`
+	Numero string `json:"numero" jsonschema:"número do documento no ME ou no cliente (ERP)"`
 }
 
 type PedidoResumo struct {
@@ -90,7 +91,8 @@ type ItemParaClassificar struct {
 }
 
 type ItensOut struct {
-	Pedido       PedidoResumo          `json:"pedido"`
+	Tipo         string                `json:"tipo"`
+	Documento    PedidoResumo          `json:"documento"`
 	Itens        []ItemParaClassificar `json:"itens"`
 	Cancelados   int                   `json:"itens_cancelados_ignorados"`
 	ProximoPasso string                `json:"proximo_passo"`
@@ -98,11 +100,12 @@ type ItensOut struct {
 
 func (d co2Deps) itensDoPedido(ctx context.Context, req *mcp.CallToolRequest, in ItensIn) (*mcp.CallToolResult, ItensOut, error) {
 	out := ItensOut{}
-	o, err := d.carregarPedido(ctx, req, in.Pedido)
+	tipo, _, o, err := d.carregarDocumento(ctx, req, in.Tipo, in.Numero)
 	if err != nil {
 		return nil, out, err
 	}
-	out.Pedido = resumo(o)
+	out.Tipo = tipo
+	out.Documento = resumo(o)
 	for _, it := range o.Items {
 		if it.Canceled != nil && *it.Canceled {
 			out.Cancelados++
@@ -114,7 +117,7 @@ func (d co2Deps) itensDoPedido(ctx context.Context, req *mcp.CallToolRequest, in
 		})
 	}
 	out.ProximoPasso = "Para cada item, escolha o NAICS 2017 de 6 dígitos da atividade que PRODUZ o item, estime o peso em kg " +
-		"de uma unidade e dê uma confiança de 0 a 1. Depois chame esg_estimar_co2_do_pedido com o mesmo pedido e a lista de itens."
+		"de uma unidade e dê uma confiança de 0 a 1. Depois chame esg_estimar_co2_do_pedido com o mesmo tipo, o mesmo numero e a lista de itens."
 	return nil, out, nil
 }
 
@@ -128,8 +131,9 @@ type Classificacao struct {
 }
 
 type EstimarIn struct {
-	Pedido    string          `json:"pedido" jsonschema:"o mesmo número de pedido usado em esg_itens_do_pedido"`
-	Itens     []Classificacao `json:"itens" jsonschema:"classificação de cada item do pedido"`
+	Tipo      string          `json:"tipo,omitempty" jsonschema:"o mesmo tipo usado em esg_itens_do_pedido: pedido (padrão), requisicao ou cotacao"`
+	Numero    string          `json:"numero" jsonschema:"o mesmo número usado em esg_itens_do_pedido"`
+	Itens     []Classificacao `json:"itens" jsonschema:"classificação de cada item do documento"`
 	PesoCusto *float64        `json:"peso_custo,omitempty" jsonschema:"peso do custo no score, de 0 a 1 (padrão 0.7)"`
 	PesoCO2   *float64        `json:"peso_co2,omitempty" jsonschema:"peso do CO2 no score, de 0 a 1 (padrão 0.3); a soma dos dois pesos é 1"`
 	Modal     string          `json:"modal,omitempty" jsonschema:"rodoviario (padrão), ferroviario, cabotagem ou aereo"`
@@ -168,6 +172,7 @@ type Pesos struct {
 }
 
 type EstimarOut struct {
+	Tipo      string         `json:"tipo"`
 	Documento PedidoResumo   `json:"documento"`
 	CO2       CO2Totais      `json:"co2"`
 	Itens     []ItemEstimado `json:"itens"`
@@ -194,10 +199,11 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 		return nil, out, fmt.Errorf("modal %q inválido: use rodoviario, ferroviario, cabotagem ou aereo", in.Modal)
 	}
 
-	o, err := d.carregarPedido(ctx, req, in.Pedido)
+	tipo, nomeDoc, o, err := d.carregarDocumento(ctx, req, in.Tipo, in.Numero)
 	if err != nil {
 		return nil, out, err
 	}
+	out.Tipo = tipo
 	out.Documento = resumo(o)
 	out.Pesos = pesos
 	out.Modal = modal
@@ -205,6 +211,13 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 	premissas := newPremissas()
 	premissas.add("Fatores de produto: " + refdata.FonteUSEEIO + ". São da economia dos EUA, convertidos por câmbio.")
 	premissas.add("Categoria (NAICS) e peso de cada item estimados por IA; a confiança vem indicada por item.")
+	if tipo != "pedido" {
+		premissas.add(fmt.Sprintf("Na %s, o valor de cada item é o preço estimado × a quantidade, e a data usada no câmbio é a de criação.", nomeDoc))
+	}
+	if o.Supplier == nil {
+		premissas.add(fmt.Sprintf("Documento (%s) ainda sem fornecedor: sem origem, o CO2 do transporte não foi calculado. "+
+			"Para comparar o frete entre fornecedores possíveis, use esg_recomendar_fornecedores.", nomeDoc))
+	}
 
 	classe := map[int]Classificacao{}
 	for _, c := range in.Itens {
@@ -217,16 +230,16 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 	destinoCab := localizar(enderecoCidadeUF(o.DeliveryAddress))
 	locaisItem, err := d.locaisDosItens(ctx, o)
 	if err != nil {
-		premissas.add("Não foi possível ler o local de entrega próprio de alguns itens; foi usado o local do cabeçalho do pedido.")
+		premissas.add("Não foi possível ler o local de entrega próprio de alguns itens; foi usado o local do cabeçalho do documento.")
 	}
 
-	// Câmbio: uma cotação para o pedido todo.
+	// Câmbio: uma cotação PTAX para o documento todo.
 	var cot *cambio.Cotacao
 	if c, err := cambio.PTAX(ctx, d.http, dataEnvio(o)); err == nil {
 		cot = &c
 		out.Cambio = &c.Taxa
 		if c.ForaDaData {
-			premissas.add(fmt.Sprintf("Câmbio: PTAX de venda de %s (R$ %.4f por US$), a mais recente disponível, porque a data do pedido está no futuro ou ausente.", c.Data, c.Taxa))
+			premissas.add(fmt.Sprintf("Câmbio: PTAX de venda de %s (R$ %.4f por US$), a mais recente disponível, porque a data do documento está no futuro ou ausente.", c.Data, c.Taxa))
 		} else {
 			premissas.add(fmt.Sprintf("Câmbio: PTAX de venda de %s (R$ %.4f por US$), Banco Central.", c.Data, c.Taxa))
 		}
@@ -251,7 +264,7 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 		if e.Moeda == "" {
 			e.Moeda = "BRL"
 			e.CamposVazios = append(e.CamposVazios, "moeda")
-			premissas.add("Moeda em branco no pedido: assumido BRL.")
+			premissas.add("Moeda em branco no documento: assumido BRL.")
 		}
 
 		c, classificado := classe[it.Item]
@@ -299,6 +312,8 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 			e.PesoKg = ptr(arred(*it.Quantity * c.PesoKgPorUnidade))
 		}
 		switch {
+		case o.Supplier == nil:
+			e.CamposVazios = append(e.CamposVazios, "distancia_km")
 		case !origem.ok || !destino.ok:
 			e.CamposVazios = append(e.CamposVazios, "distancia_km")
 			premissas.add("Município ou UF do fornecedor ou da entrega ausente ou não reconhecido em alguns itens: o CO2 do transporte deles não foi calculado.")
@@ -348,7 +363,7 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 
 	m := "informado"
 	if modalAssumido {
-		m = "assumido (o pedido não traz o modal)"
+		m = "assumido (o documento não traz o modal)"
 	}
 	premissas.add(fmt.Sprintf("Distância = linha reta entre os municípios × %.1f, com mínimo de %.0f km; modal %s %s; fator de %.3f kg CO2e por t·km (%s).",
 		co2.FatorSinuosidade, co2.DistanciaMinimaKm, modal, m, fatorModal, co2.FonteModal))
@@ -397,6 +412,42 @@ func (d co2Deps) tenantDoUsuario(req *mcp.CallToolRequest) (*int, error) {
 	return nil, fmt.Errorf("não foi possível identificar a empresa do usuário no token recebido do Genius; " +
 		"sem isso a consulta não é feita. Configure TENANT_CLAIM no servidor com o nome da claim que traz o IdMain " +
 		"(a tool quem_sou_eu mostra as claims do token)")
+}
+
+// carregarDocumento valida o tipo (pedido, requisicao ou cotacao), lê o
+// documento da empresa do usuário e recusa os cancelados. nome é o tipo como
+// aparece nas mensagens.
+func (d co2Deps) carregarDocumento(ctx context.Context, req *mcp.CallToolRequest, tipoIn, numero string) (tipo, nome string, o *datahub.Order, err error) {
+	switch strings.ToLower(strings.TrimSpace(tipoIn)) {
+	case "", "pedido":
+		o, err = d.carregarPedido(ctx, req, numero)
+		return "pedido", "pedido", o, err
+	case "requisicao", "requisição":
+		tipo, nome = "requisicao", "requisição"
+	case "cotacao", "cotação":
+		tipo, nome = "cotacao", "cotação"
+	default:
+		return "", "", nil, fmt.Errorf("tipo %q inválido: use pedido, requisicao ou cotacao", tipoIn)
+	}
+	tenant, err := d.tenantDoUsuario(req)
+	if err != nil {
+		return tipo, nome, nil, err
+	}
+	busca := d.dh.Request
+	if tipo == "cotacao" {
+		busca = d.dh.RFQ
+	}
+	o, cancelado, err := busca(ctx, tenant, numero)
+	if errors.Is(err, datahub.ErrNaoEncontrado) {
+		return tipo, nome, nil, fmt.Errorf("%s %q não encontrada para a sua empresa", nome, numero)
+	}
+	if err != nil {
+		return tipo, nome, nil, err
+	}
+	if cancelado {
+		return tipo, nome, nil, fmt.Errorf("a %s %s está cancelada: não há o que analisar", nome, o.ID)
+	}
+	return tipo, nome, o, nil
 }
 
 // carregarPedido lê o pedido da empresa do usuário e recusa cancelados.

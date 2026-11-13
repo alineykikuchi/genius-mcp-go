@@ -21,7 +21,7 @@ func TestRecomendarFornecedoresReordenaPeloCO2(t *testing.T) {
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
 
 	args := map[string]any{
-		"pedido": "29594155",
+		"numero": "29594155",
 		"itens": []map[string]any{
 			{"item": 10, "nucleo": [][]string{{"rotametro"}, {"medidor vazao"}}, "peso_kg_por_unidade": 2.0},
 			{"item": 20, "nucleo": [][]string{{"CANCELADO"}}}, // item cancelado: fica fora da busca
@@ -106,7 +106,7 @@ func TestRecomendarFornecedoresEntradaInvalida(t *testing.T) {
 
 	// Sem núcleo: não chama o recomendador.
 	if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", map[string]any{
-		"pedido": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": [][]string{}}},
+		"numero": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": [][]string{}}},
 	}); !strings.Contains(msg, "nucleo") {
 		t.Fatalf("mensagem: %s", msg)
 	}
@@ -116,12 +116,12 @@ func TestRecomendarFornecedoresEntradaInvalida(t *testing.T) {
 		muitas[i] = []string{"PALAVRA"}
 	}
 	if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", map[string]any{
-		"pedido": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": muitas}},
+		"numero": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": muitas}},
 	}); !strings.Contains(msg, "no máximo 12") {
 		t.Fatalf("mensagem: %s", msg)
 	}
 	if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", map[string]any{
-		"pedido": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": [][]string{{"X"}}}}, "peso_co2": 1.5,
+		"numero": "29594155", "itens": []map[string]any{{"item": 10, "nucleo": [][]string{{"X"}}}}, "peso_co2": 1.5,
 	}); !strings.Contains(msg, "peso_co2") {
 		t.Fatalf("mensagem: %s", msg)
 	}
@@ -129,5 +129,102 @@ func TestRecomendarFornecedoresEntradaInvalida(t *testing.T) {
 	defer dh.mu.Unlock()
 	if len(dh.flows) != 0 {
 		t.Fatalf("o recomendador não deveria ter sido chamado: %v", dh.flows)
+	}
+}
+
+// Requisição e cotação no formato visto em Trunk (valores trocados). A
+// requisição traz a descrição só no complemento e um item cancelado (status 6).
+const requisicaoFake = `{"data":{"requests":{"items":[{
+  "id":"10955121","clientCode":"10237755","tenantId":1920633,"statusFk":1,"localEntrega":4,
+  "deliveryAddress":{"placeId":4,"name":"FABRICA","city":"OTACÍLIO COSTA","state":"SC"},
+  "items":[
+    {"item":10,"quantity":3,"estimatedPrice":100,"measure":"UN","complement":"ROTAMETRO<br>NPTF 1/2","status":null,"product":{"description":"0"}},
+    {"item":20,"quantity":1,"estimatedPrice":10,"measure":"UN","complement":null,"status":6,"product":{"description":"ITEM CANCELADO"}}
+  ]}]}}}`
+
+const cotacaoFake = `{"data":{"rfqs":{"items":[{
+  "id":"14505280","clientCode":null,"tenantId":1920633,"status":0,"currency":null,"localEntrega":4,
+  "deliveryAddress":{"placeId":4,"name":"FABRICA","city":"OTACÍLIO COSTA","state":"SC"},
+  "items":[{"itemNumber":1,"quantity":3,"estimatedPrice":2.3,"canceled":null,"product":{"description":"ROTAMETRO NORMAL"}}]
+}]}}}`
+
+func TestRecomendarFornecedoresRequisicaoECotacao(t *testing.T) {
+	dh := novoDataHubFake(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+
+	// Sem itens: devolve os itens ativos do documento, com a descrição do
+	// complemento quando o produto vem "0".
+	r := callJSON(t, cs, "esg_recomendar_fornecedores", map[string]any{"tipo": "requisicao", "numero": "10955121"})
+	itens := r["itens_do_documento"].([]any)
+	if len(itens) != 1 || itens[0].(map[string]any)["descricao"] != "ROTAMETRO NPTF 1/2" || r["proximo_passo"] == "" {
+		t.Fatalf("itens da requisição: %v", r)
+	}
+	dh.mu.Lock()
+	n := len(dh.flows)
+	dh.mu.Unlock()
+	if n != 0 {
+		t.Fatal("sem itens, o recomendador não deveria ser chamado")
+	}
+
+	// Com itens: recomenda; sem fornecedor atual, avisa nas premissas.
+	for _, c := range []struct {
+		tipo, numero string
+		item         int
+	}{{"requisicao", "10955121", 10}, {"cotacao", "14505280", 1}} {
+		r := callJSON(t, cs, "esg_recomendar_fornecedores", map[string]any{
+			"tipo": c.tipo, "numero": c.numero,
+			"itens": []map[string]any{{"item": c.item, "nucleo": [][]string{{"rotametro"}}, "peso_kg_por_unidade": 2.0}},
+		})
+		if alts := r["alternativas"].([]any); len(alts) != 3 || alts[0].(map[string]any)["fornecedor"] != "PERTO LTDA" {
+			t.Fatalf("%s: alternativas %v", c.tipo, alts)
+		}
+		if b, _ := json.Marshal(r["premissas"]); !strings.Contains(string(b), "ainda sem fornecedor") {
+			t.Fatalf("%s: premissas %s", c.tipo, b)
+		}
+	}
+
+	if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", map[string]any{"tipo": "contrato", "numero": "1"}); !strings.Contains(msg, "tipo") {
+		t.Fatalf("mensagem: %s", msg)
+	}
+
+	dh.mu.Lock()
+	defer dh.mu.Unlock()
+	// A consulta da requisição e da cotação leva o filtro pelo tenant.
+	for _, q := range dh.consultas {
+		if (strings.Contains(q, "requests(") || strings.Contains(q, "rfqs(")) && !strings.Contains(q, `"t":1920633`) {
+			t.Fatalf("consulta sem tenant: %s", q)
+		}
+	}
+}
+
+func TestCO2DeRequisicaoECotacao(t *testing.T) {
+	novoDataHubFake(t)
+	fakePTAX(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+
+	for _, c := range []struct {
+		tipo, numero string
+		item         int
+		valor        float64
+	}{{"requisicao", "10955121", 10, 300}, {"cotacao", "14505280", 1, 6.9}} {
+		p1 := callJSON(t, cs, "esg_itens_do_pedido", map[string]any{"tipo": c.tipo, "numero": c.numero})
+		if itens := p1["itens"].([]any); len(itens) != 1 || p1["tipo"] != c.tipo {
+			t.Fatalf("%s passo 1: %v", c.tipo, p1)
+		}
+
+		p2 := callJSON(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
+			"tipo": c.tipo, "numero": c.numero,
+			"itens": []map[string]any{{"item": c.item, "naics": "334513", "peso_kg_por_unidade": 2.0, "confianca": 0.8}},
+		})
+		it := p2["itens"].([]any)[0].(map[string]any)
+		// Valor = preço estimado × quantidade; sem fornecedor, sem transporte.
+		if it["valor"].(float64) != c.valor || it["co2_produto_kg"] == nil || it["co2_transporte_kg"] != nil {
+			t.Fatalf("%s item: %v", c.tipo, it)
+		}
+		if b, _ := json.Marshal(p2["premissas"]); !strings.Contains(string(b), "ainda sem fornecedor") || !strings.Contains(string(b), "preço estimado") {
+			t.Fatalf("%s premissas: %s", c.tipo, b)
+		}
 	}
 }

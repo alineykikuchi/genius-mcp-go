@@ -23,9 +23,9 @@ import (
 func registerRecomendacao(s *mcp.Server, d co2Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "esg_recomendar_fornecedores",
-		Description: "Recomenda fornecedores alternativos para os itens de um pedido, reordenando os candidatos pelo CO2 do frete " +
+		Description: "Recomenda fornecedores para os itens de um pedido, requisição ou cotação, reordenando os candidatos pelo CO2 do frete " +
 			"(distância até o local de entrega). Use quando pedirem fornecedores alternativos, mais próximos ou com menor emissão. " +
-			"Antes, chame esg_itens_do_pedido. Para cada item, monte o nucleo: alternativas de palavras da descrição que identificam " +
+			"Primeiro chame sem itens: a resposta traz os itens do documento. Para cada item, monte o nucleo: alternativas de palavras da descrição que identificam " +
 			"o item (ex.: [[\"CANETA\"],[\"BIC\",\"CRISTAL\"]]), uma palavra por elemento, sem código nem medida. No máximo 12 " +
 			"alternativas somando todos os itens. Informe também o peso em kg por unidade, se já tiver estimado. " +
 			"Ao responder ao usuário, apresente sempre as premissas.",
@@ -33,7 +33,7 @@ func registerRecomendacao(s *mcp.Server, d co2Deps) {
 }
 
 type BuscaItem struct {
-	Item             int        `json:"item" jsonschema:"número do item, como devolvido por esg_itens_do_pedido"`
+	Item             int        `json:"item" jsonschema:"número do item, como devolvido em itens_do_documento"`
 	Nucleo           [][]string `json:"nucleo" jsonschema:"alternativas que identificam o item; cada alternativa é uma lista de palavras que precisam aparecer juntas na descrição"`
 	Restricoes       []string   `json:"restricoes,omitempty" jsonschema:"palavras obrigatórias (todas)"`
 	Preferencias     []string   `json:"preferencias,omitempty" jsonschema:"palavras desejadas; com todas, conta como o mesmo item"`
@@ -42,8 +42,9 @@ type BuscaItem struct {
 }
 
 type RecomendarIn struct {
-	Pedido  string      `json:"pedido" jsonschema:"o mesmo número de pedido usado em esg_itens_do_pedido"`
-	Itens   []BuscaItem `json:"itens" jsonschema:"itens do pedido para os quais buscar fornecedores"`
+	Tipo    string      `json:"tipo,omitempty" jsonschema:"pedido (padrão), requisicao ou cotacao"`
+	Numero  string      `json:"numero" jsonschema:"número do documento no ME ou no cliente (ERP)"`
+	Itens   []BuscaItem `json:"itens,omitempty" jsonschema:"itens para os quais buscar fornecedores; vazio devolve só os itens do documento"`
 	PesoCO2 *float64    `json:"peso_co2,omitempty" jsonschema:"peso do CO2 do frete no score final, de 0 a 1 (padrão 0.3); o restante é o score do recomendador"`
 	Modal   string      `json:"modal,omitempty" jsonschema:"rodoviario (padrão), ferroviario, cabotagem ou aereo"`
 	TopN    int         `json:"top_n,omitempty" jsonschema:"quantos fornecedores devolver (padrão 10, máximo 50)"`
@@ -83,14 +84,17 @@ type PesosRecomendacao struct {
 }
 
 type RecomendarOut struct {
-	Documento       PedidoResumo      `json:"documento"`
-	Destino         string            `json:"destino,omitempty"`
-	CargaKg         *float64          `json:"carga_kg"`
-	Modal           string            `json:"modal"`
-	Pesos           PesosRecomendacao `json:"pesos"`
-	FornecedorAtual FornecedorAtual   `json:"fornecedor_atual"`
-	Alternativas    []Alternativa     `json:"alternativas"`
-	Premissas       []string          `json:"premissas"`
+	Tipo             string                `json:"tipo"`
+	Documento        PedidoResumo          `json:"documento"`
+	ItensDoDocumento []ItemParaClassificar `json:"itens_do_documento,omitempty"`
+	ProximoPasso     string                `json:"proximo_passo,omitempty"`
+	Destino          string                `json:"destino,omitempty"`
+	CargaKg          *float64              `json:"carga_kg"`
+	Modal            string                `json:"modal"`
+	Pesos            PesosRecomendacao     `json:"pesos"`
+	FornecedorAtual  FornecedorAtual       `json:"fornecedor_atual"`
+	Alternativas     []Alternativa         `json:"alternativas"`
+	Premissas        []string              `json:"premissas"`
 }
 
 func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in RecomendarIn) (*mcp.CallToolResult, RecomendarOut, error) {
@@ -120,16 +124,38 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		topN = 50
 	}
 
-	o, err := d.carregarPedido(ctx, req, in.Pedido)
+	tipo, nomeDoc, o, err := d.carregarDocumento(ctx, req, in.Tipo, in.Numero)
 	if err != nil {
 		return nil, out, err
 	}
+	out.Tipo = tipo
 	out.Documento = resumo(o)
 	out.Modal = modal
 	out.Pesos = PesosRecomendacao{Recomendador: arred(1 - pesoCO2), CO2: arred(pesoCO2)}
 	premissas := newPremissas()
 
-	// Itens da busca: as palavras vêm do modelo; a quantidade, do pedido.
+	// Sem itens: devolve os itens do documento para o modelo montar o núcleo.
+	if len(in.Itens) == 0 {
+		for _, it := range o.Items {
+			if it.Canceled != nil && *it.Canceled {
+				continue
+			}
+			out.ItensDoDocumento = append(out.ItensDoDocumento, ItemParaClassificar{
+				Item: it.Item, Codigo: it.Code, Descricao: it.Description, Complemento: it.DescriptionComplement,
+				Quantidade: it.Quantity, Unidade: it.UnitOfMeasure,
+			})
+		}
+		if len(out.ItensDoDocumento) == 0 {
+			return nil, out, fmt.Errorf("%s %s não tem itens ativos para buscar fornecedores", nomeDoc, o.ID)
+		}
+		out.Alternativas = []Alternativa{}
+		out.ProximoPasso = "Para cada item, monte o nucleo (alternativas de palavras da descrição) e, se puder, estime o peso em kg de uma unidade. " +
+			"Depois chame esg_recomendar_fornecedores de novo com o mesmo tipo, o mesmo numero e a lista de itens."
+		out.Premissas = []string{}
+		return nil, out, nil
+	}
+
+	// Itens da busca: as palavras vêm do modelo; a quantidade, do documento.
 	doPedido := map[int]datahub.Item{}
 	for _, it := range o.Items {
 		if it.Canceled != nil && *it.Canceled {
@@ -144,7 +170,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		it, existe := doPedido[b.Item]
 		nucleo := limparNucleo(b.Nucleo)
 		if !existe || len(nucleo) == 0 {
-			premissas.add("Há itens informados que não estão no pedido (ou estão cancelados) ou vieram sem palavras de núcleo: ficaram fora da busca.")
+			premissas.add("Há itens informados que não estão no documento (ou estão cancelados) ou vieram sem palavras de núcleo: ficaram fora da busca.")
 			continue
 		}
 		alternativas += len(nucleo)
@@ -159,7 +185,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		}
 	}
 	if len(busca) == 0 {
-		return nil, out, fmt.Errorf("informe ao menos um item do pedido com nucleo (palavras da descrição que identificam o item)")
+		return nil, out, fmt.Errorf("informe ao menos um item do documento com nucleo (palavras da descrição que identificam o item)")
 	}
 	if alternativas > datahub.MaxAlternativas {
 		return nil, out, fmt.Errorf("são %d alternativas de núcleo; o recomendador aceita no máximo %d por chamada, somando todos os itens: "+
@@ -180,7 +206,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		return nil, out, err
 	}
 
-	// Destino: local de entrega do cabeçalho do pedido.
+	// Destino: local de entrega do cabeçalho do documento.
 	destino := localizar(enderecoCidadeUF(o.DeliveryAddress))
 	out.Destino = destino.rotulo
 	if !destino.ok {
@@ -199,11 +225,14 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		return ptr(arred(co2.Transporte(1, *out.CargaKg, *km, fatorModal)))
 	}
 
-	// Fornecedor atual do pedido: referência da comparação.
+	// Fornecedor atual (só no pedido): referência da comparação.
 	atual := localizar(cidadeUF(o.Supplier))
 	out.FornecedorAtual = FornecedorAtual{Nome: out.Documento.Fornecedor, Origem: atual.rotulo, DistanciaKm: distancia(atual)}
 	out.FornecedorAtual.CO2FreteKg = frete(out.FornecedorAtual.DistanciaKm)
 	nomeAtual := refdata.Norm(out.Documento.Fornecedor)
+	if o.Supplier == nil {
+		premissas.add(fmt.Sprintf("Documento (%s) ainda sem fornecedor: sem referência, a diferença de CO2 contra o fornecedor atual não é calculada.", nomeDoc))
+	}
 
 	var minKm, maxKm float64
 	temKm := false
@@ -265,7 +294,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 
 	m := "informado"
 	if modalAssumido {
-		m = "assumido (o pedido não traz o modal)"
+		m = "assumido (o documento não traz o modal)"
 	}
 	premissas.add("Candidatos: fornecedores que já venderam itens com essas palavras na descrição, nos últimos 36 meses (recomendador de fornecedores, flow do ME-DataHub). " +
 		"Protótipo válido só em Trunk: o recomendador lê o histórico de pedidos de todos os clientes.")
@@ -273,7 +302,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 	premissas.add(fmt.Sprintf("Score final = %.0f%% do score do recomendador + %.0f%% da nota de CO2. A nota de CO2 vai de 0 a 1 (1 = menor distância entre os candidatos).",
 		(1-pesoCO2)*100, pesoCO2*100))
 	premissas.add(fmt.Sprintf("O CO2 só reordena os %d primeiros candidatos do recomendador; não traz para a lista quem ficou fora desse corte.", topN))
-	premissas.add(fmt.Sprintf("Distância = linha reta entre o município do fornecedor e o da entrega (cabeçalho do pedido) × %.1f, com mínimo de %.0f km; modal %s %s; fator de %.3f kg CO2e por t·km (%s).",
+	premissas.add(fmt.Sprintf("Distância = linha reta entre o município do fornecedor e o da entrega (cabeçalho do documento) × %.1f, com mínimo de %.0f km; modal %s %s; fator de %.3f kg CO2e por t·km (%s).",
 		co2.FatorSinuosidade, co2.DistanciaMinimaKm, modal, m, fatorModal, co2.FonteModal))
 	premissas.add("O CO2 do produto não entra na comparação: no método por gasto ele não diferencia fornecedores do mesmo item. Entre fornecedores, o que muda é o frete, que costuma ser parcela pequena do total.")
 	premissas.add("Peso dos itens estimado por IA. Resultado de triagem: não substitui inventário de emissões auditado nem a homologação do fornecedor.")

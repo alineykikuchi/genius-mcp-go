@@ -79,7 +79,14 @@ func novoDataHubFake(t *testing.T) *dataHubFake {
 			_, _ = w.Write([]byte(`{"data":{"orders":{"items":[]}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(pedidoFake))
+		switch {
+		case strings.Contains(string(body), "requests("):
+			_, _ = w.Write([]byte(requisicaoFake))
+		case strings.Contains(string(body), "rfqs("):
+			_, _ = w.Write([]byte(cotacaoFake))
+		default:
+			_, _ = w.Write([]byte(pedidoFake))
+		}
 	})
 	mux.HandleFunc("/flows/recomendacao-fornecedores/recomendar", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+tokenServicoFake {
@@ -146,7 +153,7 @@ func TestEstimativaCO2PontaAPonta(t *testing.T) {
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
 
 	// Passo 1: itens (o cancelado fica de fora).
-	p1 := callJSON(t, cs, "esg_itens_do_pedido", map[string]any{"pedido": "29594155"})
+	p1 := callJSON(t, cs, "esg_itens_do_pedido", map[string]any{"numero": "29594155"})
 	itens := p1["itens"].([]any)
 	if len(itens) != 1 || p1["itens_cancelados_ignorados"].(float64) != 1 {
 		t.Fatalf("passo 1: %v", p1)
@@ -154,7 +161,7 @@ func TestEstimativaCO2PontaAPonta(t *testing.T) {
 
 	// Passo 2: NAICS 334513 (instrumentos de medição industrial), 2 kg por unidade.
 	p2 := callJSON(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
-		"pedido": "29594155",
+		"numero": "29594155",
 		"itens":  []map[string]any{{"item": 10, "naics": "334513", "peso_kg_por_unidade": 2.0, "confianca": 0.8}},
 	})
 	it := p2["itens"].([]any)[0].(map[string]any)
@@ -187,7 +194,7 @@ func TestEstimativaCO2PontaAPonta(t *testing.T) {
 
 	// NAICS que não existe: não calcula o produto e devolve candidatos.
 	p3 := callJSON(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
-		"pedido": "29594155",
+		"numero": "29594155",
 		"itens":  []map[string]any{{"item": 10, "naics": "334599", "peso_kg_por_unidade": 2.0, "confianca": 0.4}},
 	})
 	it3 := p3["itens"].([]any)[0].(map[string]any)
@@ -218,11 +225,11 @@ func TestPedidoNaoEncontradoEPesosInvalidos(t *testing.T) {
 	ts := newTestServer(t, "require")
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": "1920633"})) // tenant como string também vale
 
-	if msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"pedido": "404"}); !strings.Contains(msg, "não encontrado") {
+	if msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"numero": "404"}); !strings.Contains(msg, "não encontrado") {
 		t.Fatalf("mensagem: %s", msg)
 	}
 	if msg := erroDaTool(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
-		"pedido": "29594155", "itens": []map[string]any{}, "peso_custo": 0.9, "peso_co2": 0.9,
+		"numero": "29594155", "itens": []map[string]any{}, "peso_custo": 0.9, "peso_co2": 0.9,
 	}); !strings.Contains(msg, "pesos inválidos") {
 		t.Fatalf("mensagem: %s", msg)
 	}
@@ -233,7 +240,7 @@ func TestSemTenantNoTokenNaoConsulta(t *testing.T) {
 	ts := newTestServer(t, "require")
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"email": "x@exemplo.com"}))
 
-	if msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"pedido": "29594155"}); !strings.Contains(msg, "TENANT_CLAIM") {
+	if msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"numero": "29594155"}); !strings.Contains(msg, "TENANT_CLAIM") {
 		t.Fatalf("mensagem: %s", msg)
 	}
 	dh.mu.Lock()
@@ -250,7 +257,7 @@ func TestTenantClaimConfiguravelEFiltroDesligado(t *testing.T) {
 	t.Setenv("TENANT_CLAIM", "empresa")
 	ts := newTestServer(t, "require")
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"empresa": 777}))
-	callJSON(t, cs, "esg_itens_do_pedido", map[string]any{"pedido": "29594155"})
+	callJSON(t, cs, "esg_itens_do_pedido", map[string]any{"numero": "29594155"})
 	dh.mu.Lock()
 	if n := len(dh.consultas); n != 1 || !strings.Contains(dh.consultas[0], `"t":777`) {
 		t.Fatalf("esperava filtro pelo tenant 777: %v", dh.consultas)
@@ -262,7 +269,7 @@ func TestTenantClaimConfiguravelEFiltroDesligado(t *testing.T) {
 	t.Setenv("TENANT_FILTRO", "off")
 	ts2 := newTestServer(t, "require")
 	cs2 := connect(t, ts2.URL, jwtDoUsuario(map[string]any{"email": "x@exemplo.com"}))
-	callJSON(t, cs2, "esg_itens_do_pedido", map[string]any{"pedido": "29594155"})
+	callJSON(t, cs2, "esg_itens_do_pedido", map[string]any{"numero": "29594155"})
 	dh.mu.Lock()
 	defer dh.mu.Unlock()
 	if n := len(dh.consultas); n != 1 || strings.Contains(dh.consultas[0], "tenantId: { eq") {
@@ -276,7 +283,7 @@ func TestSemCredencialDeServico(t *testing.T) {
 	ts := newTestServer(t, "require")
 	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
 
-	msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"pedido": "29594155"})
+	msg := erroDaTool(t, cs, "esg_itens_do_pedido", map[string]any{"numero": "29594155"})
 	if !strings.Contains(msg, "CLIENT_ID e CLIENT_SECRET") {
 		t.Fatalf("mensagem: %s", msg)
 	}

@@ -142,15 +142,86 @@ const orderFields = `
         unitOfMeasure total canceled purchaseGroup deliveryPlaceId
       }`
 
-// queryPedidos monta a consulta de pedidos. campo é "id" ou "clientCode"; com
-// tenant, acrescenta o filtro pelo comprador do pedido (tenantId).
-func queryPedidos(campo, tipo string, comTenant bool, limite int) string {
+// Requisição e cotação: só os campos que as tools usam. A descrição do item
+// fica no produto; na requisição, às vezes só no complemento.
+const requestFields = `
+      id clientCode createdDate tenantId statusFk localEntrega
+      deliveryAddress { placeId name city state }
+      items { item quantity estimatedPrice currency measure complement status local product { description } }`
+
+const rfqFields = `
+      id clientCode createdDate tenantId status currency localEntrega
+      deliveryAddress { placeId name city state }
+      items { itemNumber quantity estimatedPrice canceled placeId product { description } }`
+
+// queryDocumento monta a consulta de um documento (orders, requests, rfqs).
+// campo é "id" ou "clientCode"; com tenant, acrescenta o filtro pela empresa
+// dona do documento (tenantId, nas três entidades).
+func queryDocumento(root, fields, campo, tipo string, comTenant bool, limite int) string {
 	vars, filtro := "$v: "+tipo, campo+": { eq: $v }"
 	if comTenant {
 		vars += ", $t: Int"
 		filtro += ", tenantId: { eq: $t }"
 	}
-	return fmt.Sprintf(`query(%s) { orders(filter: { %s }, limit: %d, offset: 0) { items {%s } } }`, vars, filtro, limite, orderFields)
+	return fmt.Sprintf(`query(%s) { %s(filter: { %s }, limit: %d, offset: 0) { items {%s } } }`, vars, root, filtro, limite, fields)
+}
+
+// buscar procura um documento pelo número do ME (id) ou, se não achar, pelo
+// número no cliente (clientCode), e decodifica o encontrado em out.
+func (c *Client) buscar(ctx context.Context, root, fields, nome string, tenant *int, numero string, out any) error {
+	numero = strings.TrimSpace(numero)
+	if numero == "" {
+		return fmt.Errorf("informe o número %s %s", artigo(nome, "do", "da"), nome)
+	}
+	tentar := func(campo, tipo string, v any, limite int) ([]json.RawMessage, error) {
+		vars := map[string]any{"v": v}
+		if tenant != nil {
+			vars["t"] = *tenant
+		}
+		var r map[string]struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := c.do(ctx, queryDocumento(root, fields, campo, tipo, tenant != nil, limite), vars, &r); err != nil {
+			return nil, err
+		}
+		return r[root].Items, nil
+	}
+	// O id é Int no GraphQL: só tenta por id se couber em 32 bits.
+	if n, err := strconv.ParseInt(numero, 10, 32); err == nil && n > 0 {
+		items, err := tentar("id", "Int", n, 2)
+		if err != nil {
+			return err
+		}
+		if len(items) > 0 {
+			return json.Unmarshal(items[0], out)
+		}
+	}
+	items, err := tentar("clientCode", "String", numero, 5)
+	if err != nil {
+		return err
+	}
+	switch len(items) {
+	case 0:
+		return ErrNaoEncontrado
+	case 1:
+		return json.Unmarshal(items[0], out)
+	}
+	ids := make([]string, 0, len(items))
+	for _, raw := range items {
+		var x struct {
+			ID ID `json:"id"`
+		}
+		_ = json.Unmarshal(raw, &x)
+		ids = append(ids, string(x.ID))
+	}
+	return fmt.Errorf("há mais de %s %s com o código %q; informe o número no ME (%s)", artigo(nome, "um", "uma"), nome, numero, strings.Join(ids, ", "))
+}
+
+func artigo(nome, masc, fem string) string {
+	if nome == "pedido" {
+		return masc
+	}
+	return fem
 }
 
 const queryLocais = `query($t: Int, $p: [Int!]) { addresses(filter: { id: { eq: $t }, placeId: { in: $p } }, limit: 100, offset: 0) { items { placeId name city state } } }`
@@ -161,48 +232,113 @@ const queryLocais = `query($t: Int, $p: [Int!]) { addresses(filter: { id: { eq: 
 // tenant é o IdMain da empresa do usuário e vira filtro da consulta. Passe nil
 // só quando o filtro por tenant foi desligado de propósito.
 func (c *Client) Order(ctx context.Context, tenant *int, numero string) (*Order, error) {
-	numero = strings.TrimSpace(numero)
-	if numero == "" {
-		return nil, fmt.Errorf("informe o número do pedido")
-	}
-	type resp struct {
-		Orders struct {
-			Items []Order `json:"items"`
-		} `json:"orders"`
-	}
-	vars := func(v any) map[string]any {
-		m := map[string]any{"v": v}
-		if tenant != nil {
-			m["t"] = *tenant
-		}
-		return m
-	}
-	// O id é Int no GraphQL: só tenta por id se couber em 32 bits.
-	if n, err := strconv.ParseInt(numero, 10, 32); err == nil && n > 0 {
-		var r resp
-		if err := c.do(ctx, queryPedidos("id", "Int", tenant != nil, 2), vars(n), &r); err != nil {
-			return nil, err
-		}
-		if len(r.Orders.Items) > 0 {
-			return &r.Orders.Items[0], nil
-		}
-	}
-	var r resp
-	if err := c.do(ctx, queryPedidos("clientCode", "String", tenant != nil, 5), vars(numero), &r); err != nil {
+	var o Order
+	if err := c.buscar(ctx, "orders", orderFields, "pedido", tenant, numero, &o); err != nil {
 		return nil, err
 	}
-	switch len(r.Orders.Items) {
-	case 0:
-		return nil, ErrNaoEncontrado
-	case 1:
-		return &r.Orders.Items[0], nil
-	}
-	ids := make([]string, 0, len(r.Orders.Items))
-	for _, o := range r.Orders.Items {
-		ids = append(ids, string(o.ID))
-	}
-	return nil, fmt.Errorf("há mais de um pedido com o código %q; informe o número do pedido no ME (%s)", numero, strings.Join(ids, ", "))
+	return &o, nil
 }
+
+// Request busca uma requisição de compra e a devolve no formato de pedido: sem
+// fornecedor, com o preço estimado, a data de criação no lugar da data de envio
+// e os itens cancelados (status 6) marcados. Cancelado diz se a requisição toda
+// foi cancelada (status do workflow 3).
+func (c *Client) Request(ctx context.Context, tenant *int, numero string) (o *Order, cancelado bool, err error) {
+	var r struct {
+		ID              ID       `json:"id"`
+		ClientCode      string   `json:"clientCode"`
+		CreatedDate     string   `json:"createdDate"`
+		TenantID        *int     `json:"tenantId"`
+		StatusFk        *int     `json:"statusFk"`
+		LocalEntrega    *int     `json:"localEntrega"`
+		DeliveryAddress *Address `json:"deliveryAddress"`
+		Items           []struct {
+			Item           int      `json:"item"`
+			Quantity       *float64 `json:"quantity"`
+			EstimatedPrice *float64 `json:"estimatedPrice"`
+			Currency       string   `json:"currency"`
+			Measure        string   `json:"measure"`
+			Complement     string   `json:"complement"`
+			Status         *int     `json:"status"`
+			Local          *int     `json:"local"`
+			Product        *struct {
+				Description string `json:"description"`
+			} `json:"product"`
+		} `json:"items"`
+	}
+	if err := c.buscar(ctx, "requests", requestFields, "requisição", tenant, numero, &r); err != nil {
+		return nil, false, err
+	}
+	o = &Order{ID: r.ID, ClientCode: r.ClientCode, SentDate: r.CreatedDate, TenantID: r.TenantID, DeliveryPlaceID: r.LocalEntrega, DeliveryAddress: r.DeliveryAddress}
+	for _, it := range r.Items {
+		desc := ""
+		if it.Product != nil {
+			desc = it.Product.Description
+		}
+		o.Items = append(o.Items, Item{
+			Item: it.Item, Description: descricao(desc, it.Complement), Quantity: it.Quantity, Price: it.EstimatedPrice,
+			Currency: it.Currency, UnitOfMeasure: it.Measure, DeliveryPlaceID: it.Local,
+			Canceled: ptrBool(it.Status != nil && *it.Status == 6),
+		})
+	}
+	return o, r.StatusFk != nil && *r.StatusFk == 3, nil
+}
+
+// RFQ busca uma cotação e a devolve no formato de pedido (sem fornecedor, com o
+// preço estimado e a data de criação no lugar da data de envio). Cancelada diz
+// se a cotação foi cancelada (status 3).
+func (c *Client) RFQ(ctx context.Context, tenant *int, numero string) (o *Order, cancelada bool, err error) {
+	var r struct {
+		ID              ID       `json:"id"`
+		ClientCode      string   `json:"clientCode"`
+		CreatedDate     string   `json:"createdDate"`
+		TenantID        *int     `json:"tenantId"`
+		Status          *int     `json:"status"`
+		Currency        string   `json:"currency"`
+		LocalEntrega    *int     `json:"localEntrega"`
+		DeliveryAddress *Address `json:"deliveryAddress"`
+		Items           []struct {
+			ItemNumber     int      `json:"itemNumber"`
+			Quantity       *float64 `json:"quantity"`
+			EstimatedPrice *float64 `json:"estimatedPrice"`
+			Canceled       *bool    `json:"canceled"`
+			PlaceID        *int     `json:"placeId"`
+			Product        *struct {
+				Description string `json:"description"`
+			} `json:"product"`
+		} `json:"items"`
+	}
+	if err := c.buscar(ctx, "rfqs", rfqFields, "cotação", tenant, numero, &r); err != nil {
+		return nil, false, err
+	}
+	o = &Order{ID: r.ID, ClientCode: r.ClientCode, SentDate: r.CreatedDate, TenantID: r.TenantID, Currency: r.Currency, DeliveryPlaceID: r.LocalEntrega, DeliveryAddress: r.DeliveryAddress}
+	for _, it := range r.Items {
+		desc := ""
+		if it.Product != nil {
+			desc = it.Product.Description
+		}
+		o.Items = append(o.Items, Item{
+			Item: it.ItemNumber, Description: descricao(desc, ""), Quantity: it.Quantity, Price: it.EstimatedPrice,
+			DeliveryPlaceID: it.PlaceID, Canceled: it.Canceled,
+		})
+	}
+	return o, r.Status != nil && *r.Status == 3, nil
+}
+
+// descricao usa a do produto; vazia ou "0" (visto em Trunk), cai no complemento,
+// sem as quebras de linha HTML.
+func descricao(produto, complemento string) string {
+	if p := strings.TrimSpace(produto); p != "" && p != "0" {
+		return p
+	}
+	c := strings.Join(strings.Fields(strings.NewReplacer("<br>", " ", "<br/>", " ", "<br />", " ").Replace(complemento)), " ")
+	if r := []rune(c); len(r) > 300 {
+		c = string(r[:300]) + "…"
+	}
+	return c
+}
+
+func ptrBool(b bool) *bool { return &b }
 
 // Addresses busca locais do tenant pelo número do local. A chave de Locais é
 // composta (ID do tenant + Local): o número sozinho não identifica o local.
