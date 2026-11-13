@@ -32,6 +32,8 @@ const (
 	clientIDFake     = "client-de-teste"
 	clientSecretFake = "secret-de-teste"
 	tokenServicoFake = "token-de-servico-fake"
+	// pedidoEmDolar: número que faz o DataHub falso devolver o pedido em USD.
+	pedidoEmDolar = "777001"
 )
 
 // dataHubFake simula o endpoint de token e o GraphQL do DataHub, e guarda o que
@@ -80,6 +82,8 @@ func novoDataHubFake(t *testing.T) *dataHubFake {
 			return
 		}
 		switch {
+		case strings.Contains(string(body), `"v":`+pedidoEmDolar) || strings.Contains(string(body), `"v":"`+pedidoEmDolar+`"`):
+			_, _ = w.Write([]byte(strings.Replace(pedidoFake, `"currency":"BRL"`, `"currency":"USD"`, 1)))
 		case strings.Contains(string(body), "requests("):
 			_, _ = w.Write([]byte(requisicaoFake))
 		case strings.Contains(string(body), "rfqs("):
@@ -216,6 +220,81 @@ func TestEstimativaCO2PontaAPonta(t *testing.T) {
 		if !strings.Contains(c, "tenantId: { eq: $t }") || !strings.Contains(c, `"t":1920633`) {
 			t.Fatalf("consulta sem filtro de tenant: %s", c)
 		}
+	}
+}
+
+func TestEstimativaTrazOValorDoCarbono(t *testing.T) {
+	novoDataHubFake(t)
+	fakePTAX(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+	perto := func(a, b float64) bool { return a > b-0.011 && a < b+0.011 }
+	estimar := func(numero string, confianca float64, extra map[string]any) map[string]any {
+		args := map[string]any{
+			"numero": numero,
+			"itens":  []map[string]any{{"item": 10, "naics": "334513", "peso_kg_por_unidade": 2.0, "confianca": confianca}},
+		}
+		for k, v := range extra {
+			args[k] = v
+		}
+		return callJSON(t, cs, "esg_estimar_co2_do_pedido", args)
+	}
+
+	// Preço padrão: carbono = total_kg / 1000 × 500, e o custo com carbono usa o
+	// valor do documento, que está em reais.
+	r := estimar("29594155", 0.8, nil)
+	total := r["co2"].(map[string]any)["total_kg"].(float64)
+	c := r["carbono"].(map[string]any)
+	if !perto(c["custo_carbono_brl"].(float64), total/1000*500) || c["co2e_kg"].(float64) != total {
+		t.Fatalf("custo do carbono: %v (total_kg %v)", c, total)
+	}
+	if !perto(c["custo_total_brl"].(float64), 5614.30+c["custo_carbono_brl"].(float64)) || c["valor_pedido_fmt"] != "R$ 5.614,30" {
+		t.Fatalf("custo com carbono: %v", c)
+	}
+	if c["preco_carbono"].(map[string]any)["origem"] != "padrao" || c["custo_carbono_fmt"] == "" || c["peso_carbono_fmt"] == "" {
+		t.Fatalf("bloco carbono: %v", c)
+	}
+	s, _ := r["como_responder"].(string)
+	if !strings.Contains(s, "carbono.custo_carbono_fmt") || strings.Contains(s, "baixa confiança") {
+		t.Fatalf("como_responder: %q", s)
+	}
+	if !contemTexto(r["premissas"], "não é cobrado") || !contemTexto(r["premissas"], "R$ 500/t") {
+		t.Fatalf("premissas de preço: %v", r["premissas"])
+	}
+
+	// Preço informado pelo usuário.
+	u := estimar("29594155", 0.8, map[string]any{"preco_carbono_brl_t": 200})
+	cu := u["carbono"].(map[string]any)
+	if cu["preco_carbono"].(map[string]any)["origem"] != "usuario" || !perto(cu["custo_carbono_brl"].(float64), total/1000*200) {
+		t.Fatalf("preço informado: %v", cu)
+	}
+
+	// Documento em dólar: custo do carbono sem custo com carbono nem percentual.
+	d := estimar(pedidoEmDolar, 0.8, nil)
+	cd := d["carbono"].(map[string]any)
+	if cd["custo_carbono_brl"].(float64) <= 0 {
+		t.Fatalf("documento em dólar: %v", cd)
+	}
+	for _, campo := range []string{"custo_total_brl", "valor_pedido_brl", "peso_carbono_percentual"} {
+		if _, tem := cd[campo]; tem {
+			t.Fatalf("documento em dólar não devia trazer %s: %v", campo, cd)
+		}
+	}
+	if !contemTexto(d["premissas"], "não está em reais") {
+		t.Fatalf("premissa de moeda: %v", d["premissas"])
+	}
+
+	// Item com baixa confiança: como_responder manda dizer isso.
+	b := estimar("29594155", 0.4, nil)
+	if s, _ := b["como_responder"].(string); !strings.Contains(s, "baixa confiança") {
+		t.Fatalf("como_responder sem a parte de baixa confiança: %q", s)
+	}
+
+	// Preço negativo: erro da tool.
+	if msg := erroDaTool(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
+		"numero": "29594155", "itens": []map[string]any{}, "preco_carbono_brl_t": -10,
+	}); !strings.Contains(msg, "reais por tonelada") {
+		t.Fatalf("mensagem: %s", msg)
 	}
 }
 
