@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -30,7 +31,12 @@ func Register(s *mcp.Server, version string) {
 			"Use quando pedirem para testar a autenticação ou 'quem sou eu'.",
 	}, whoAmI)
 
-	registerCO2(s, co2Deps{dh: datahub.NewFromEnv(), http: &http.Client{Timeout: 15 * time.Second}})
+	registerCO2(s, co2Deps{
+		dh:           datahub.NewFromEnv(),
+		http:         &http.Client{Timeout: 15 * time.Second},
+		tenantClaim:  os.Getenv("TENANT_CLAIM"),
+		tenantFiltro: strings.ToLower(os.Getenv("TENANT_FILTRO")),
+	})
 }
 
 // ---- ping ------------------------------------------------------------------

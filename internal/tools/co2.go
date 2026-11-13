@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,12 @@ import (
 type co2Deps struct {
 	dh   *datahub.Client
 	http *http.Client
+	// tenantClaim: nome da claim do token do Genius que traz o IdMain do
+	// usuário (TENANT_CLAIM). Vazio = tenta os nomes de claimsDeTenant.
+	tenantClaim string
+	// tenantFiltro: "off" desliga o filtro por tenant (TENANT_FILTRO). Qualquer
+	// outro valor mantém o filtro obrigatório.
+	tenantFiltro string
 }
 
 func registerCO2(s *mcp.Server, d co2Deps) {
@@ -91,7 +98,7 @@ type ItensOut struct {
 
 func (d co2Deps) itensDoPedido(ctx context.Context, req *mcp.CallToolRequest, in ItensIn) (*mcp.CallToolResult, ItensOut, error) {
 	out := ItensOut{}
-	o, _, err := d.carregarPedido(ctx, req, in.Pedido)
+	o, err := d.carregarPedido(ctx, req, in.Pedido)
 	if err != nil {
 		return nil, out, err
 	}
@@ -187,7 +194,7 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 		return nil, out, fmt.Errorf("modal %q inválido: use rodoviario, ferroviario, cabotagem ou aereo", in.Modal)
 	}
 
-	o, tok, err := d.carregarPedido(ctx, req, in.Pedido)
+	o, err := d.carregarPedido(ctx, req, in.Pedido)
 	if err != nil {
 		return nil, out, err
 	}
@@ -208,7 +215,7 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 	origem := localizar(cidadeUF(o.Supplier))
 	// Destino: local do cabeçalho; o item pode ter um local próprio.
 	destinoCab := localizar(enderecoCidadeUF(o.DeliveryAddress))
-	locaisItem, err := d.locaisDosItens(ctx, tok, o)
+	locaisItem, err := d.locaisDosItens(ctx, o)
 	if err != nil {
 		premissas.add("Não foi possível ler o local de entrega próprio de alguns itens; foi usado o local do cabeçalho do pedido.")
 	}
@@ -354,36 +361,71 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 
 // ---- apoio -----------------------------------------------------------------
 
-// carregarPedido lê o pedido com o token do usuário e recusa cancelados.
-func (d co2Deps) carregarPedido(ctx context.Context, req *mcp.CallToolRequest, numero string) (*datahub.Order, string, error) {
-	tok := ""
+// claimsDeTenant: nomes de claim tentados, nesta ordem, quando TENANT_CLAIM não
+// está definida.
+var claimsDeTenant = []string{"tenantId", "tenant_id", "idMain", "IdMain", "id_main", "idmain", "workflowId", "workflow_id"}
+
+// tenantDoUsuario lê o tenant (IdMain) da empresa do usuário no token que o
+// Genius repassou. O DataHub é consultado com um token de serviço que enxerga
+// todos os clientes, então é este valor que restringe a leitura.
+//
+// Devolve nil só quando o filtro foi desligado de propósito (TENANT_FILTRO=off).
+func (d co2Deps) tenantDoUsuario(req *mcp.CallToolRequest) (*int, error) {
+	if d.tenantFiltro == "off" {
+		return nil, nil
+	}
+	var claims map[string]any
 	if extra := req.GetExtra(); extra != nil && extra.TokenInfo != nil {
-		tok, _ = extra.TokenInfo.Extra[token.ExtraRaw].(string)
+		claims, _ = extra.TokenInfo.Extra[token.ExtraClaims].(map[string]any)
 	}
-	if tok == "" {
-		return nil, "", fmt.Errorf("sem token do usuário: o MCP precisa estar cadastrado no Genius com credential_mode me_access_token")
+	nomes := claimsDeTenant
+	if d.tenantClaim != "" {
+		nomes = []string{d.tenantClaim}
 	}
-	o, err := d.dh.Order(ctx, tok, numero)
+	for _, n := range nomes {
+		switch v := claims[n].(type) {
+		case float64:
+			if v > 0 {
+				return ptr(int(v)), nil
+			}
+		case string:
+			if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && i > 0 {
+				return &i, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("não foi possível identificar a empresa do usuário no token recebido do Genius; " +
+		"sem isso a consulta não é feita. Configure TENANT_CLAIM no servidor com o nome da claim que traz o IdMain " +
+		"(a tool quem_sou_eu mostra as claims do token)")
+}
+
+// carregarPedido lê o pedido da empresa do usuário e recusa cancelados.
+func (d co2Deps) carregarPedido(ctx context.Context, req *mcp.CallToolRequest, numero string) (*datahub.Order, error) {
+	tenant, err := d.tenantDoUsuario(req)
+	if err != nil {
+		return nil, err
+	}
+	o, err := d.dh.Order(ctx, tenant, numero)
 	if errors.Is(err, datahub.ErrNaoEncontrado) {
-		return nil, "", fmt.Errorf("pedido %q não encontrado para a sua empresa", numero)
+		return nil, fmt.Errorf("pedido %q não encontrado para a sua empresa", numero)
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if o.RefusalStatus != nil {
 		switch *o.RefusalStatus {
 		case 1:
-			return nil, "", fmt.Errorf("o pedido %s foi recusado pelo fornecedor: não há o que estimar", o.ID)
+			return nil, fmt.Errorf("o pedido %s foi recusado pelo fornecedor: não há o que estimar", o.ID)
 		case 5:
-			return nil, "", fmt.Errorf("o pedido %s está cancelado: não há o que estimar", o.ID)
+			return nil, fmt.Errorf("o pedido %s está cancelado: não há o que estimar", o.ID)
 		}
 	}
-	return o, tok, nil
+	return o, nil
 }
 
 // locaisDosItens resolve o local de entrega dos itens que têm um local próprio,
 // diferente do cabeçalho.
-func (d co2Deps) locaisDosItens(ctx context.Context, tok string, o *datahub.Order) (map[int]local, error) {
+func (d co2Deps) locaisDosItens(ctx context.Context, o *datahub.Order) (map[int]local, error) {
 	out := map[int]local{}
 	if o.TenantID == nil {
 		return out, nil
@@ -406,7 +448,7 @@ func (d co2Deps) locaisDosItens(ctx context.Context, tok string, o *datahub.Orde
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
-	addrs, err := d.dh.Addresses(ctx, tok, *o.TenantID, ids)
+	addrs, err := d.dh.Addresses(ctx, *o.TenantID, ids)
 	if err != nil {
 		return out, err
 	}
