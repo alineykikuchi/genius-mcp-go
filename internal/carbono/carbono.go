@@ -53,9 +53,9 @@ func Precificar(co2eKg float64, valor *float64, precoBRLT float64) Custo {
 	total := arred(v + c.CustoCarbono)
 	c.CustoTotal = &total
 	if v > 0 {
-		peso := c.CustoCarbono / v * 100
+		// Irrelevante sai do peso já arredondado, para bater com o que é exibido.
+		peso := arred(c.CustoCarbono / v * 100)
 		c.Irrelevante = peso < LimiteIrrelevantePct
-		peso = arred(peso)
 		c.PesoCarbonoPct = &peso
 	}
 	return c
@@ -81,7 +81,7 @@ func Comparar(ref, alt Custo) Comparacao {
 
 	c := Comparacao{
 		DifPreco:      arred(valorB - valorA),
-		DifCO2eKg:     co2B - co2A,
+		DifCO2eKg:     arred(co2B - co2A),
 		DifCarbono:    arred(alt.CustoCarbono - ref.CustoCarbono),
 		DifCustoTotal: arred((valorB + alt.CustoCarbono) - (valorA + ref.CustoCarbono)),
 	}

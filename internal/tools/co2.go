@@ -441,7 +441,7 @@ func comoResponderEstimativa(doc *CarbonoDocumento, precoIncomum, confiancaBaixa
 	if confiancaBaixa {
 		partes = append(partes, "Diga quais itens têm baixa confiança e que o resultado é uma indicação.")
 	}
-	partes = append(partes, frasesExtras(precoIncomum, false)...)
+	partes = append(partes, frasesExtras(precoIncomum && doc != nil, false)...)
 	partes = append(partes,
 		"Cite campos_vazios e campos_estimados só quando existirem na resposta; não comente a ausência deles.",
 		"Apresente as premissas em uma ou duas frases, não em lista.")

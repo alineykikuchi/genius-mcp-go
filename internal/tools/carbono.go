@@ -160,7 +160,7 @@ func (d co2Deps) precificarCarbono(_ context.Context, _ *mcp.CallToolRequest, in
 			return nil, out, err
 		}
 		avisos = append(avisos, avisosAlt...)
-		out.ComoResponder = comoResponderComparacao(out, precoIncomum, in.ConfiancaBaixa)
+		out.ComoResponder = comoResponderComparacao(out, len(avisosAlt) > 0, precoIncomum, in.ConfiancaBaixa)
 	} else {
 		if in.CO2eKg == nil {
 			return nil, out, fmt.Errorf("informe co2e_kg (o total_kg de esg_estimar_co2_do_pedido) ou de 2 a 5 alternativas para comparar")
@@ -293,6 +293,11 @@ func compararAlternativas(out *PrecificarOut, in []AlternativaCarbonoIn, p Preco
 
 	emT := carbono.UsarToneladas(maiorKg)
 	ref := validas[0]
+	// A primeira da lista (pedido ou fornecedor atual) ficou fora: a referência
+	// passa a ser a próxima completa, e a resposta precisa dizer isso.
+	if in[0].ValorBRL == nil || in[0].CO2eKg == nil {
+		avisos = append(avisos, fmt.Sprintf("A primeira alternativa (a referência informada) ficou fora da comparação: as diferenças e o preço de virada foram calculados contra %q.", ref.rotulo))
+	}
 	melhor := 0
 	for i, v := range validas {
 		out.Alternativas = append(out.Alternativas, AlternativaCarbonoOut{
@@ -391,7 +396,18 @@ func comoResponderDocumento(doc CarbonoDocumento, precoIncomum, confiancaBaixa b
 	return numerar(partes)
 }
 
-func comoResponderComparacao(out PrecificarOut, precoIncomum, confiancaBaixa bool) string {
+// campoDoCO2e é o campo que diz quanto CO2e a alternativa evita ou emite a
+// mais: a redução percentual, ou a diferença em massa quando ela não existe
+// (referência com CO2e zero).
+func campoDoCO2e(c ComparacaoCarbonoOut) string {
+	if c.ReducaoCO2eFmt == "" {
+		return "dif_co2e_fmt"
+	}
+	return "reducao_co2e_fmt"
+}
+
+// alternativaFora: alguma alternativa informada ficou fora da comparação.
+func comoResponderComparacao(out PrecificarOut, alternativaFora, precoIncomum, confiancaBaixa bool) string {
 	ref := out.Alternativas[0].Rotulo
 	var partes []string
 
@@ -401,13 +417,15 @@ func comoResponderComparacao(out PrecificarOut, precoIncomum, confiancaBaixa boo
 		case c.Veredito == carbono.Empate:
 			partes = append(partes, "Primeira frase: diga que as duas alternativas empatam no custo com carbono e aponte a de menor CO2e (recomendada).")
 		case c.Situacao == carbono.MelhorNosDois:
-			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q é mais barata (dif_preco_fmt) e emite menos (reducao_co2e_fmt) que %q, e que compensa a qualquer preço de carbono.", c.Rotulo, ref))
+			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q não custa mais (dif_preco_fmt) nem emite mais (dif_co2e_fmt) que %q, e que compensa a qualquer preço de carbono. "+
+				"Se uma das duas diferenças for zero, diga que nesse ponto as alternativas são iguais.", c.Rotulo, ref))
 		case c.Situacao == carbono.PiorNosDois:
-			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q é mais cara (dif_preco_fmt) e emite mais que %q, e que não compensa a nenhum preço de carbono.", c.Rotulo, ref))
+			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q não custa menos (dif_preco_fmt) nem emite menos (dif_co2e_fmt) que %q, e que não compensa a nenhum preço de carbono. "+
+				"Se uma das duas diferenças for zero, diga que nesse ponto as alternativas são iguais.", c.Rotulo, ref))
 		case c.Veredito == carbono.Compensa:
-			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q compensa (recomendada) e por quanto fica à frente (dif_custo_total_fmt), citando o que ela custa a mais ou a menos (dif_preco_fmt) e quanto CO2e evita ou emite a mais (reducao_co2e_fmt).", c.Rotulo))
+			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q compensa (recomendada) e por quanto fica à frente (dif_custo_total_fmt), citando o que ela custa a mais ou a menos (dif_preco_fmt) e quanto CO2e evita ou emite a mais (%s).", c.Rotulo, campoDoCO2e(c)))
 		default:
-			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q não compensa ao preço usado e por quanto fica atrás de %q (dif_custo_total_fmt), citando o que ela custa a mais ou a menos (dif_preco_fmt) e quanto CO2e evita ou emite a mais (reducao_co2e_fmt).", c.Rotulo, ref))
+			partes = append(partes, fmt.Sprintf("Primeira frase: diga que %q não compensa ao preço usado e por quanto fica atrás de %q (dif_custo_total_fmt), citando o que ela custa a mais ou a menos (dif_preco_fmt) e quanto CO2e evita ou emite a mais (%s).", c.Rotulo, ref, campoDoCO2e(c)))
 		}
 		partes = append(partes, "Tabela curta com as linhas Preço, CO2e estimado, Carbono (referência) e Custo com carbono, uma coluna por alternativa e a coluna Diferença (dif_preco_fmt, dif_co2e_fmt, dif_carbono_fmt, dif_custo_total_fmt).")
 		switch c.Situacao {
@@ -422,12 +440,15 @@ func comoResponderComparacao(out PrecificarOut, precoIncomum, confiancaBaixa boo
 		partes = append(partes,
 			"Primeira frase: diga qual alternativa tem o menor custo com carbono (recomendada). Se houver empate no custo com carbono, diga isso e aponte a de menor CO2e.",
 			"Tabela com as linhas Preço, CO2e estimado, Carbono (referência) e Custo com carbono, uma coluna por alternativa, sem a coluna Diferença.",
-			fmt.Sprintf("Abaixo da tabela, uma frase por alternativa com as diferenças contra a referência %q (dif_preco_fmt, reducao_co2e_fmt, dif_custo_total_fmt). "+
+			fmt.Sprintf("Abaixo da tabela, uma frase por alternativa com as diferenças contra a referência %q (dif_preco_fmt, dif_custo_total_fmt e reducao_co2e_fmt; sem reducao_co2e_fmt, use dif_co2e_fmt). "+
 				"Cite o preço de virada só nas alternativas que trazem preco_virada_fmt: com situacao paga_mais_emite_menos, ela compensa enquanto o carbono valer mais que esse preço; "+
 				"com paga_menos_emite_mais, enquanto valer menos. Com melhor_nos_dois, diga que compensa a qualquer preço de carbono; com pior_nos_dois, que não compensa.", ref))
 	}
 
 	partes = append(partes, "Uma frase de premissa. "+fraseDoPreco(out.PrecoCarbono)+" Use 'cerca de' ou 'estimado' junto ao CO2e.")
+	if alternativaFora {
+		partes = append(partes, "Diga quais alternativas ficaram fora da comparação e por quê, conforme o campo avisos; se a referência mudou, diga contra qual alternativa as diferenças foram calculadas.")
+	}
 	partes = append(partes, frasesExtras(precoIncomum, confiancaBaixa)...)
 	partes = append(partes, "Ofereça recalcular com outro preço por tonelada, em reais.")
 	return numerar(partes)

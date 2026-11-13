@@ -24,6 +24,8 @@ func TestPrecificar(t *testing.T) {
 		{"carbono irrelevante", 28, p(10000), 500, 14, p(10014), p(0.14), true},
 		{"sem valor do pedido", 28, nil, 500, 14, nil, nil, false},
 		{"valor zero não divide por zero", 28, p(0), 500, 14, p(14), nil, false},
+		// 0,996% arredonda para 1%: não pode sair irrelevante com "1%" na tela.
+		{"peso que arredonda para 1%", 199.2, p(10000), 500, 99.6, p(10099.6), p(1), false},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {

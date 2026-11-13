@@ -183,6 +183,23 @@ func TestPrecificarCarbonoAlternativaIncompleta(t *testing.T) {
 	if !contemTexto(r["avisos"], "Fornecedor C") {
 		t.Fatalf("aviso com o rótulo da alternativa incompleta: %v", r["avisos"])
 	}
+	if !strings.Contains(r["como_responder"].(string), "avisos") {
+		t.Fatalf("como_responder devia mandar citar os avisos: %v", r["como_responder"])
+	}
+
+	// A primeira (a referência) incompleta: a referência passa a ser a próxima
+	// completa, e o aviso diz contra quem as diferenças foram calculadas.
+	p := callJSON(t, cs, toolCarbono, map[string]any{"alternativas": []map[string]any{
+		{"rotulo": "Atual", "co2e_kg": 500},
+		{"rotulo": "Fornecedor A", "valor_brl": 10000, "co2e_kg": 1200},
+		{"rotulo": "Fornecedor B", "valor_brl": 10300, "co2e_kg": 300},
+	}})
+	if c := p["comparacao"].([]any)[0].(map[string]any); c["contra"] != "Fornecedor A" || p["alternativas"].([]any)[0].(map[string]any)["referencia"] != true {
+		t.Fatalf("referência devia passar a ser o Fornecedor A: %v", p)
+	}
+	if !contemTexto(p["avisos"], "Atual") || !contemTexto(p["avisos"], `calculados contra "Fornecedor A"`) {
+		t.Fatalf("aviso da referência trocada: %v", p["avisos"])
+	}
 }
 
 func TestPrecificarCarbonoEntradaInvalida(t *testing.T) {

@@ -351,22 +351,25 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 				a.CarbonoEvitadoFmt = carbono.BRL(*a.CarbonoEvitadoBRL)
 			}
 		}
-		out.PrecoCarbono = &precoCarbono
-		for _, p := range premissasCarbono(precoCarbono, false) {
-			premissas.add(p)
-		}
-		for _, a := range avisosPreco {
-			premissas.add(a)
+		// Preço e premissas de preço só aparecem quando há valor em reais na resposta.
+		if temDelta {
+			out.PrecoCarbono = &precoCarbono
+			for _, p := range premissasCarbono(precoCarbono, false) {
+				premissas.add(p)
+			}
+			for _, a := range avisosPreco {
+				premissas.add(a)
+			}
 		}
 	}
-	out.ComoResponder = comoResponderRecomendacao(out.CargaKg != nil, temDelta, len(avisosPreco) > 0)
+	out.ComoResponder = comoResponderRecomendacao(out.CargaKg != nil, temDelta, precoCarbono.Origem == "usuario", len(avisosPreco) > 0)
 	out.Premissas = premissas.lista
 	return nil, out, nil
 }
 
 // comoResponderRecomendacao monta a orientação de resposta da recomendação.
 // temPeso: há CO2 do frete em kg. temDelta: há fornecedor atual para comparar.
-func comoResponderRecomendacao(temPeso, temDelta, precoIncomum bool) string {
+func comoResponderRecomendacao(temPeso, temDelta, precoDoUsuario, precoIncomum bool) string {
 	var partes []string
 	switch {
 	case !temPeso:
@@ -378,15 +381,20 @@ func comoResponderRecomendacao(temPeso, temDelta, precoIncomum bool) string {
 				"Não há fornecedor atual para comparar: não cite CO2e evitado nem carbono evitado.",
 			"Mostre uma tabela curta com Fornecedor, Origem, Distância e CO2e do frete.")
 	default:
-		partes = append(partes,
-			"Comece pela alternativa com menor CO2e de frete que ainda está bem colocada (posicao), dizendo quanto CO2e evita contra o fornecedor atual (delta_co2_frete_fmt) "+
-				"e quanto isso vale em carbono (carbono_frete_evitado_fmt), valor de referência que não é cobrado.",
+		p := "Comece pela alternativa com menor CO2e de frete que ainda está bem colocada (posicao), dizendo quanto CO2e evita contra o fornecedor atual (delta_co2_frete_fmt) " +
+			"e quanto isso vale em carbono (carbono_frete_evitado_fmt), valor de referência que não é cobrado. " +
+			"Delta com sinal de mais (e carbono evitado negativo) quer dizer que a alternativa emite mais que o fornecedor atual: nesse caso diga que ela emite mais, não que evita. " +
+			"Se nenhuma alternativa emitir menos, diga que o fornecedor atual já tem o menor CO2e de frete."
+		if precoDoUsuario {
+			p += " O preço por tonelada foi informado pelo usuário: escreva 'valor informado por você' no lugar de 'valor de referência'."
+		}
+		partes = append(partes, p,
 			"Mostre uma tabela curta com Fornecedor, Origem, Distância, CO2e do frete e Carbono evitado.")
 	}
 	partes = append(partes,
 		"Diga quem já vendeu à empresa do usuário (ja_vendeu_a_sua_empresa).",
 		"Esta lista não traz preço dos fornecedores. Não compare custo com carbono aqui; para isso, peça os preços ao comprador e use esg_precificar_carbono.")
-	partes = append(partes, frasesExtras(precoIncomum && temPeso, false)...)
+	partes = append(partes, frasesExtras(precoIncomum && temDelta, false)...)
 	partes = append(partes, "Apresente as premissas em uma ou duas frases. Não recalcule nem invente valores.")
 	return numerar(partes)
 }
