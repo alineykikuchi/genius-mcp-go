@@ -13,6 +13,10 @@ autenticação com o token do usuário ME e ligação ao agente pelo Genius Back
 | `esg_recomendar_fornecedores` | Busca fornecedores alternativos para os itens de um pedido, requisição ou cotação no recomendador do ME-DataHub e reordena a lista pelo CO2 do frete (distância até o local de entrega). |
 | `esg_precificar_carbono` | Converte o CO2e estimado em valor em reais (preço de referência de R$ 500 por tonelada, ou o informado pelo usuário) e compara de 2 a 5 alternativas pelo custo com carbono (preço + carbono), com o preço de virada. |
 
+## Fluxo das tools (visão para produto)
+
+O artefato [Fluxo das tools ECO.ME](https://claude.ai/artifact/83Mhy9EdH6GkcEGK7GT9hg) mostra, sem código, como as quatro tools de ESG se encadeiam: o diagrama de uma pergunta do comprador até a resposta, os três pedidos que ele pode fazer, um exemplo de comparação pelo custo com carbono e as decisões em aberto para o PO (as mesmas de `PENDENCIAS.md`).
+
 ## Guia rápido: estimativa de CO2 de um pedido, requisição ou cotação
 
 No Genius, com um usuário comprador, peça: **"analise o impacto ESG do pedido 29594155"** (ou **"da requisição 39115867"**, **"da cotação 14505280"**).
