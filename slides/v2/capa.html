@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECO.ME · Capa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Martian+Mono:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+/* ===========================================
+   TEMA: cores e fontes da marca ECO.ME
+   Azul tirado do fundo do logo, verde da folha.
+   =========================================== */
+:root {
+  --blue: #011399;        /* fundo do logo ECO.ME */
+  --blue-deep: #000b66;
+  --green: #5fdb3d;       /* folha do logo */
+  --white: #ffffff;
+  --muted: rgba(255,255,255,.92);
+  --hair: rgba(255,255,255,.16);
+  --paper: #f3f5fb;
+  --ink: #0a1240;
+  --ink-muted: #262e5e;
+  --ink-hair: rgba(10,18,64,.12);
+
+  --font-display: 'Montserrat', sans-serif;
+  --font-mono: 'Martian Mono', monospace;
+
+  --ease: cubic-bezier(.16,1,.3,1);
+  --stage-bg: #000a55;
+  --slide-bg: var(--blue);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ===========================================
+   FIXED 16:9 STAGE (viewport-base.css, completo)
+   =========================================== */
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--stage-bg, #000); }
+.deck-viewport { position: fixed; inset: 0; overflow: hidden; background: var(--stage-bg, #000); }
+.deck-stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; transform-origin: 0 0; background: var(--slide-bg, #fff); }
+.slide { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: hidden; display: block; visibility: hidden; opacity: 0; pointer-events: none; background: var(--slide-bg, #fff); }
+.slide.active, .slide.visible { visibility: visible; opacity: 1; pointer-events: auto; z-index: 1; }
+img, video, canvas, svg { max-width: 100%; max-height: 100%; }
+.deck-controls { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1000; }
+@media print {
+  html, body { width: 1920px; height: auto; overflow: visible; background: #fff; }
+  .deck-viewport { position: static; overflow: visible; background: #fff; }
+  .deck-stage { position: static; width: auto; height: auto; transform: none !important; background: none; }
+  .slide { position: relative; display: block !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important; width: 1920px; height: 1080px; break-after: page; page-break-after: always; }
+  .slide:last-child { break-after: auto; page-break-after: auto; }
+  .deck-controls { display: none !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.2s !important; }
+}
+
+/* ===========================================
+   SUPERFÍCIES: slide azul e slide claro
+   =========================================== */
+.slide { font-family: var(--font-display); color: var(--white); transition: opacity .5s ease; }
+.slide.blue {
+  background:
+    radial-gradient(1100px 700px at 85% 10%, rgba(95,219,61,.10), transparent 60%),
+    radial-gradient(900px 700px at 0% 100%, rgba(0,0,0,.25), transparent 60%),
+    radial-gradient(rgba(255,255,255,.07) 1.5px, transparent 1.5px) 0 0 / 48px 48px,
+    var(--blue);
+}
+.slide.paper {
+  color: var(--ink);
+  background:
+    radial-gradient(rgba(1,19,153,.07) 1.5px, transparent 1.5px) 0 0 / 48px 48px,
+    var(--paper);
+}
+
+/* ===========================================
+   CHROME DO SLIDE: marca no topo, seção, página
+   =========================================== */
+.chrome { position: absolute; left: 140px; right: 140px; top: 64px; display: flex; justify-content: space-between; align-items: center; }
+.mark { font: 900 30px/1 var(--font-display); letter-spacing: -.01em; }
+.mark b { color: var(--green); font-weight: 900; }
+.paper .mark b { color: var(--blue); }
+.section { font: 600 20px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; opacity: .9; }
+.pageno { position: absolute; right: 140px; bottom: 56px; font: 600 20px/1 var(--font-mono); letter-spacing: .1em; opacity: .9; }
+
+/* "Linhas de velocidade" do carrinho do logo: viram o marcador de seção */
+.kicker { display: flex; align-items: center; gap: 22px; font: 600 22px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+.paper .kicker { color: var(--blue); }
+.speed { display: grid; gap: 7px; }
+.speed i { display: block; height: 8px; border-radius: 8px; background: var(--green); }
+.speed i:nth-child(1) { width: 46px; }
+.speed i:nth-child(2) { width: 58px; }
+.speed i:nth-child(3) { width: 40px; margin-left: 14px; }
+
+h2.title { font: 800 84px/1.04 var(--font-display); letter-spacing: -.025em; }
+h2.title em { font-style: normal; color: var(--green); }
+.paper h2.title em { color: var(--blue); }
+.mono { font-family: var(--font-mono); }
+
+/* ===========================================
+   ANIMAÇÕES: entram quando o slide fica visível
+   Use style="--d:.3s" para escalonar.
+   =========================================== */
+.reveal { opacity: 0; transform: translateY(32px); transition: opacity .8s var(--ease), transform .8s var(--ease); transition-delay: var(--d, 0s); }
+.reveal-scale { opacity: 0; transform: scale(.94); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0s); }
+.slide.visible .reveal, .slide.visible .reveal-scale { opacity: 1; transform: none; }
+
+/* ===========================================
+   01 · CAPA
+   =========================================== */
+.slide.s-cover { background: var(--blue); } /* liso: igual ao fundo do logo */
+.s-cover .kicker { position: absolute; left: 140px; top: 200px; }
+.s-cover .logo { position: absolute; left: 50%; top: 290px; width: 1440px; margin-left: -720px;
+  /* bordas suaves para o fundo do JPG sumir no fundo do slide */
+  -webkit-mask: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent), linear-gradient(transparent, #000 8%, #000 92%, transparent);
+  -webkit-mask-composite: source-in;
+          mask: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent), linear-gradient(transparent, #000 8%, #000 92%, transparent);
+          mask-composite: intersect; }
+.s-cover .tag { position: absolute; left: 0; right: 0; top: 760px; text-align: center; font: 700 52px/1.2 var(--font-display); letter-spacing: -.01em; }
+.s-cover .tag em { font-style: normal; color: var(--green); }
+.s-cover .foot { position: absolute; left: 140px; right: 140px; bottom: 64px; display: flex; justify-content: space-between; align-items: center; font: 600 21px/1 var(--font-mono); letter-spacing: .08em; color: var(--muted); }
+.me-badge { display: flex; align-items: center; gap: 20px; }
+.me-badge img { width: 64px; height: 64px; border-radius: 16px; }
+
+/* ===========================================
+   02 · PROBLEMA
+   =========================================== */
+.s-problem .kicker { position: absolute; left: 140px; top: 200px; }
+.s-problem h2 { position: absolute; left: 140px; top: 260px; width: 1350px; }
+.stats { position: absolute; left: 140px; right: 140px; top: 640px; display: grid; grid-template-columns: repeat(3, 1fr); }
+.stat { padding: 0 48px; border-left: 2px solid var(--ink-hair); }
+.stat:first-child { padding-left: 0; border-left: 0; }
+.stat .n { font: 900 140px/1 var(--font-display); letter-spacing: -.04em; color: var(--blue); }
+.stat .n small { font-size: 64px; letter-spacing: -.02em; }
+.stat p { margin-top: 22px; font: 500 28px/1.4 var(--font-display); color: var(--ink-muted); max-width: 460px; }
+
+/* ===========================================
+   03 · POR QUE AGORA
+   =========================================== */
+.s-now .kicker { position: absolute; left: 140px; top: 200px; }
+.s-now h2 { position: absolute; left: 140px; top: 260px; width: 1400px; }
+.cards3 { position: absolute; left: 140px; right: 140px; top: 520px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; }
+.gcard { height: 400px; padding: 48px 44px; border-radius: 28px; background: rgba(255,255,255,.06); border: 1px solid var(--hair); display: flex; flex-direction: column; }
+.gcard .lbl { font: 600 21px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+.gcard .big { margin-top: 30px; font: 900 72px/1 var(--font-display); letter-spacing: -.03em; }
+.gcard p { margin-top: auto; font: 500 27px/1.42 var(--font-display); color: var(--muted); }
+
+/* ===========================================
+   04 · SOLUÇÃO
+   =========================================== */
+.s-sol .kicker { position: absolute; left: 140px; top: 200px; }
+.s-sol h2 { position: absolute; left: 140px; top: 260px; width: 1120px; font-size: 66px; }
+.bubble { position: absolute; right: 140px; top: 262px; width: 500px; padding: 34px 40px; border-radius: 32px 32px 8px 32px; background: var(--ink); color: var(--white); font: 600 30px/1.35 var(--font-display); box-shadow: 0 24px 60px rgba(10,18,64,.18); }
+.bubble span { display: block; margin-bottom: 14px; font: 400 16px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+.flow { position: absolute; left: 140px; right: 140px; top: 560px; display: grid; grid-template-columns: 1fr 80px 1fr 80px 1fr; align-items: stretch; }
+.step { height: 380px; padding: 44px 40px; border-radius: 28px; display: flex; flex-direction: column; }
+.step .no { font: 600 21px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+.step h3 { margin-top: 26px; font: 800 48px/1.05 var(--font-display); letter-spacing: -.02em; }
+.step p { margin-top: auto; font: 500 26px/1.42 var(--font-display); }
+.step.a { background: var(--blue); color: var(--white); }
+.step.a .no { color: var(--green); }
+.step.a p { color: var(--muted); }
+.step.b { background: var(--white); border: 2px solid var(--blue); color: var(--ink); }
+.step.b .no { color: var(--blue); }
+.step.b p { color: var(--ink-muted); }
+.step.c { background: var(--green); color: var(--ink); }
+.step.c p { color: var(--ink); }
+.arrow { display: flex; align-items: center; justify-content: center; font: 700 60px/1 var(--font-display); color: var(--blue); }
+
+/* ===========================================
+   05 · ARQUITETURA REAL
+   =========================================== */
+.s-arch .kicker { position: absolute; left: 140px; top: 200px; }
+.s-arch h2 { position: absolute; left: 140px; top: 260px; width: 1400px; font-size: 76px; }
+.nodes { position: absolute; left: 140px; right: 140px; top: 410px; display: grid; grid-template-columns: 1fr 90px 1fr 90px 1fr; }
+.node { height: 230px; padding: 36px 38px; border-radius: 24px; background: rgba(255,255,255,.07); border: 1px solid var(--hair); display: flex; flex-direction: column; }
+.node.core { background: var(--white); color: var(--ink); border: 0; }
+.node .lbl { font: 600 20px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+.node.core .lbl { color: var(--blue); }
+.node h3 { margin-top: 18px; font: 800 44px/1.05 var(--font-display); letter-spacing: -.02em; }
+.node p { margin-top: auto; font: 500 23px/1.4 var(--font-display); color: var(--muted); }
+.node.core p { color: var(--ink-muted); }
+.wire { display: flex; align-items: center; justify-content: center; }
+.wire i { position: relative; display: block; width: 100%; height: 3px; background: var(--green); }
+.wire i::after { content: ''; position: absolute; right: -2px; top: -7px; border: 8.5px solid transparent; border-left: 12px solid var(--green); border-right: 0; }
+.drop { position: absolute; left: 959px; top: 640px; width: 3px; height: 60px; background: var(--green); }
+.sources { position: absolute; left: 140px; right: 140px; top: 700px; padding-top: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+.sources::before { content: ''; position: absolute; left: 16.6%; right: 16.6%; top: 0; height: 3px; background: var(--green); }
+.src { position: relative; margin-top: 34px; }
+.src::before { content: ''; position: absolute; left: calc(50% - 1.5px); top: -35px; width: 3px; height: 35px; background: var(--green); }
+.src { padding: 26px 30px; border-radius: 18px; border: 1.5px dashed rgba(255,255,255,.55); background: rgba(255,255,255,.05); font: 500 23px/1.38 var(--font-display); color: var(--muted); }
+.src b { display: block; margin-bottom: 6px; font: 700 26px/1.2 var(--font-display); color: var(--white); }
+.trust { position: absolute; left: 140px; right: 140px; top: 905px; display: flex; align-items: center; gap: 22px; font: 400 21px/1.4 var(--font-mono); color: var(--white); }
+.trust svg { flex: none; width: 34px; height: 34px; }
+
+/* ===========================================
+   06 · COMO CALCULA
+   =========================================== */
+.s-calc .kicker { position: absolute; left: 140px; top: 200px; }
+.s-calc h2 { position: absolute; left: 140px; top: 260px; width: 1640px; }
+.formulas { position: absolute; left: 140px; right: 140px; top: 470px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+.fcard { height: 370px; padding: 46px 50px; border-radius: 28px; background: var(--white); border: 1px solid var(--ink-hair); box-shadow: 0 20px 50px rgba(10,18,64,.06); display: flex; flex-direction: column; }
+.fcard .lbl { font: 600 21px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--blue); }
+.fcard .eq { margin-top: 26px; font: 800 44px/1.12 var(--font-display); letter-spacing: -.02em; }
+.fcard .eq span { color: var(--blue); }
+.fcard p { margin-top: auto; font: 500 25px/1.45 var(--font-display); color: var(--ink-muted); }
+.note { position: absolute; left: 140px; right: 140px; top: 890px; padding: 26px 34px; border-radius: 18px; background: var(--blue); color: var(--white); display: flex; gap: 26px; align-items: center; font: 500 26px/1.35 var(--font-display); }
+.note b { flex: none; padding: 10px 16px; border-radius: 10px; background: var(--green); color: var(--ink); font: 600 17px/1 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+
+/* ===========================================
+   07 · CASE REAL (cupom de pedido)
+   =========================================== */
+.s-case .kicker { position: absolute; left: 140px; top: 200px; }
+.s-case h2 { position: absolute; left: 140px; top: 260px; width: 880px; font-size: 64px; }
+.facts { position: absolute; left: 140px; top: 560px; width: 880px; display: grid; gap: 34px; }
+.fact { display: grid; grid-template-columns: 330px 1fr; gap: 30px; align-items: baseline; padding-top: 30px; border-top: 1px solid var(--hair); }
+.fact .n { white-space: nowrap; font: 900 72px/1 var(--font-display); letter-spacing: -.03em; color: var(--green); }
+.fact p { font: 500 26px/1.4 var(--font-display); color: var(--muted); }
+.receipt { position: absolute; right: 190px; top: 150px; width: 640px; height: 780px; padding: 54px 52px; background: #f6f4ec; color: var(--ink);
+  font: 400 23px/1.75 var(--font-mono); transform: rotate(2deg); box-shadow: 0 40px 90px rgba(0,0,20,.45);
+  -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 28px 100%;
+          mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 28px 100%; }
+.receipt h3 { font: 900 44px/1 var(--font-display); letter-spacing: -.01em; text-transform: uppercase; }
+.receipt .meta { margin: 10px 0 26px; font-size: 19px; color: #3a3c50; }
+.row { display: flex; justify-content: space-between; gap: 20px; }
+.dash { margin: 22px 0; border-top: 2px dashed #b8b9c6; }
+.total { margin-top: 22px; padding: 22px 26px; background: var(--green); font-weight: 600; }
+.total .big { display: block; margin-top: 8px; font: 900 96px/1 var(--font-display); letter-spacing: -.03em; }
+.receipt .fine { margin-top: 22px; font-size: 18px; line-height: 1.6; color: #3a3c50; }
+.s-case .receipt { opacity: 0; transform: rotate(2deg) translateY(-120px); transition: opacity 1s var(--ease) .25s, transform 1.1s var(--ease) .25s; }
+.s-case.visible .receipt { opacity: 1; transform: rotate(2deg); }
+
+/* ===========================================
+   08 · A DECISÃO MUDA (comparativo)
+   =========================================== */
+.s-dec .kicker { position: absolute; left: 140px; top: 200px; }
+.s-dec h2 { position: absolute; left: 140px; top: 260px; width: 1500px; }
+.cmp { position: absolute; left: 140px; right: 140px; top: 470px; display: grid; grid-template-columns: 1.15fr 1fr 1fr; }
+.cmp > div { padding: 20px 40px; font: 600 32px/1.2 var(--font-display); border-bottom: 1px solid var(--ink-hair); display: flex; align-items: center; height: 92px; }
+.cmp .h { height: 100px; font: 600 21px/1.3 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-muted); border-bottom: 2px solid var(--ink); }
+.cmp .k { font: 500 28px/1.2 var(--font-display); color: var(--ink-muted); padding-left: 0; }
+.cmp .best { background: rgba(95,219,61,.22); }
+.cmp .h.best { background: var(--green); color: var(--ink); border-radius: 22px 22px 0 0; }
+.cmp .tot { height: 112px; font: 900 54px/1 var(--font-display); letter-spacing: -.02em; border-bottom: 0; }
+.cmp .tot.best { border-radius: 0 0 22px 22px; color: var(--blue); }
+.cmp .delta { margin-left: 16px; font: 600 24px/1 var(--font-mono); color: var(--ink-muted); }
+.cmp .delta.good { color: #0b5204; }
+.foot-note { position: absolute; left: 140px; right: 400px; bottom: 52px; font: 400 20px/1.5 var(--font-mono); color: var(--ink-muted); }
+
+/* ===========================================
+   09 · POR QUE ECO.ME
+   =========================================== */
+.s-why .kicker { position: absolute; left: 140px; top: 200px; }
+.s-why h2 { position: absolute; left: 140px; top: 260px; width: 1500px; font-size: 104px; line-height: 1; }
+.s-why .sub { position: absolute; left: 140px; top: 500px; font: 600 40px/1.2 var(--font-display); color: var(--muted); }
+.why { position: absolute; left: 140px; right: 140px; top: 640px; display: grid; gap: 0; }
+.why .r { display: grid; grid-template-columns: 340px 1fr; align-items: center; padding: 30px 0; border-top: 1px solid var(--hair); }
+.why .r b { font: 600 20px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+.why .r span { font: 600 34px/1.3 var(--font-display); }
+
+/* ===========================================
+   10 · ENCERRAMENTO (acrônimo)
+   =========================================== */
+.acro { position: absolute; left: 140px; top: 210px; display: grid; gap: 6px; }
+.acro div { font: 800 92px/1.08 var(--font-display); letter-spacing: -.03em; color: rgba(255,255,255,.88); }
+.acro b { color: var(--green); font-weight: 900; }
+.acro .soft { font-weight: 600; color: rgba(255,255,255,.8); }
+.end { position: absolute; right: 140px; top: 260px; width: 800px; text-align: right; }
+.end h2 { font: 900 120px/1 var(--font-display); letter-spacing: -.04em; }
+.end p { margin-top: 26px; font: 600 36px/1.3 var(--font-display); color: var(--muted); }
+.end-info { position: absolute; right: 140px; bottom: 120px; width: 700px; text-align: right; display: grid; gap: 18px; font: 400 23px/1.4 var(--font-mono); color: var(--muted); }
+.end-info b { color: var(--white); font-weight: 600; }
+.s-end .me-badge { position: absolute; left: 140px; bottom: 64px; font: 600 21px/1 var(--font-mono); letter-spacing: .08em; color: var(--muted); }
+
+/* ===========================================
+   CONTROLES FORA DO PALCO: barra de progresso e edição
+   =========================================== */
+.progress { position: fixed; left: 0; bottom: 0; height: 4px; background: var(--green); z-index: 1000; transition: width .4s var(--ease); }
+.edit-hotzone { position: fixed; top: 0; left: 0; width: 80px; height: 80px; z-index: 10000; cursor: pointer; }
+.edit-toggle { position: fixed; top: 18px; left: 18px; z-index: 10001; padding: 10px 14px; border: 0; border-radius: 10px; background: var(--green); color: var(--ink); font: 600 14px var(--font-mono); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .3s ease; }
+.edit-toggle.show, .edit-toggle.active { opacity: 1; pointer-events: auto; }
+body.editing [contenteditable="true"] { outline: 2px dashed rgba(95,219,61,.7); outline-offset: 6px; cursor: text; }
+</style>
+</head>
+<body>
+<div class="deck-viewport">
+<main class="deck-stage" id="deckStage">
+
+  <!-- 01 · CAPA -->
+  <section class="slide blue s-cover" aria-label="Capa">
+    <div class="kicker reveal"><span class="speed"><i></i><i></i><i></i></span>Hackathon Techweek 2026 · ESG</div>
+    <img class="logo reveal-scale" style="--d:.15s" src="assets/logo-eco-me-ponto.jpg" alt="ECO.ME: Emissões e Compras Otimizadas no Mercado Eletrônico">
+    <p class="tag reveal" style="--d:.45s">O carbono de cada compra, <em>na tela</em>, no momento da decisão.</p>
+    <div class="foot reveal" style="--d:.6s">
+      <div class="me-badge"><img src="assets/logo-me.jpg" alt="Mercado Eletrônico">Um agente de CO2 no ME Genius</div>
+      
+    </div>
+  </section>
+
+
+</main>
+</div>
+
+<div class="progress" id="progress"></div>
+<div class="edit-hotzone" id="editHotzone"></div>
+<button class="edit-toggle" id="editToggle" title="Modo edição (E)">editar</button>
+
+<script>
+/* ===========================================
+   CONTROLADOR: escala do palco + navegação
+   Setas, espaço, PageUp/Down, roda do mouse e swipe.
+   =========================================== */
+class SlidePresentation {
+  constructor() {
+    this.slides = [...document.querySelectorAll('.slide')];
+    this.stage = document.getElementById('deckStage');
+    this.progress = document.getElementById('progress');
+    this.current = 0;
+    this.scale();
+    addEventListener('resize', () => this.scale());
+    this.keys(); this.wheel(); this.touch();
+    const fromHash = parseInt(location.hash.slice(1), 10);
+    this.show(Number.isFinite(fromHash) ? fromHash - 1 : 0);
+  }
+  scale() {
+    const f = Math.min(innerWidth / 1920, innerHeight / 1080);
+    this.stage.style.transform = `translate(${(innerWidth - 1920 * f) / 2}px, ${(innerHeight - 1080 * f) / 2}px) scale(${f})`;
+  }
+  show(i) {
+    this.current = Math.max(0, Math.min(i, this.slides.length - 1));
+    this.slides.forEach((s, k) => {
+      s.classList.toggle('active', k === this.current);
+      s.classList.toggle('visible', k === this.current);
+    });
+    this.progress.style.width = ((this.current + 1) / this.slides.length * 100) + '%';
+    history.replaceState(null, '', '#' + (this.current + 1));
+  }
+  next() { this.show(this.current + 1); }
+  prev() { this.show(this.current - 1); }
+  keys() {
+    document.addEventListener('keydown', e => {
+      if (e.target.isContentEditable) return;
+      if (['ArrowRight', 'ArrowDown', ' ', 'PageDown'].includes(e.key)) { e.preventDefault(); this.next(); }
+      if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); this.prev(); }
+      if (e.key === 'Home') this.show(0);
+      if (e.key === 'End') this.show(this.slides.length - 1);
+    });
+  }
+  wheel() {
+    let lock = false;
+    addEventListener('wheel', e => {
+      if (lock || Math.abs(e.deltaY) < 30) return;
+      lock = true; setTimeout(() => lock = false, 700);
+      e.deltaY > 0 ? this.next() : this.prev();
+    }, { passive: true });
+  }
+  touch() {
+    let x0 = null;
+    addEventListener('touchstart', e => x0 = e.touches[0].clientX, { passive: true });
+    addEventListener('touchend', e => {
+      if (x0 === null) return;
+      const dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) > 50) dx < 0 ? this.next() : this.prev();
+    });
+  }
+}
+const deck = new SlidePresentation();
+
+/* ===========================================
+   EDIÇÃO INLINE: E ou canto superior esquerdo.
+   Salva no navegador; Ctrl+S baixa o HTML editado.
+   =========================================== */
+const editor = {
+  isActive: false,
+  key: 'eco-me-v2-edits',
+  targets: () => document.querySelectorAll('.slide h2, .slide h3, .slide p, .slide .n, .slide .big, .slide .lbl, .slide .kicker, .slide .row span, .slide .cmp > div, .slide .why span, .slide .end-info div, .slide .foot-note, .slide .tag, .slide .bubble'),
+  toggleEditMode() {
+    this.isActive = !this.isActive;
+    document.body.classList.toggle('editing', this.isActive);
+    document.getElementById('editToggle').classList.toggle('active', this.isActive);
+    this.targets().forEach(el => el.contentEditable = this.isActive);
+    if (!this.isActive) this.save();
+  },
+  save() {
+    try { localStorage.setItem(this.key, JSON.stringify([...this.targets()].map(el => el.innerHTML))); } catch (_) {}
+  },
+  load() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(this.key) || 'null');
+      if (saved) this.targets().forEach((el, i) => { if (saved[i] != null) el.innerHTML = saved[i]; });
+    } catch (_) {}
+  },
+  download() {
+    this.targets().forEach(el => el.removeAttribute('contenteditable'));
+    const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([html], { type: 'text/html' })), download: 'index.html' });
+    a.click();
+    if (this.isActive) this.targets().forEach(el => el.contentEditable = true);
+  }
+};
+editor.load();
+
+const hotzone = document.getElementById('editHotzone');
+const editToggle = document.getElementById('editToggle');
+let hideTimeout = null;
+editToggle.addEventListener('click', () => editor.toggleEditMode());
+hotzone.addEventListener('click', () => editor.toggleEditMode());
+hotzone.addEventListener('mouseenter', () => { clearTimeout(hideTimeout); editToggle.classList.add('show'); });
+hotzone.addEventListener('mouseleave', () => { hideTimeout = setTimeout(() => { if (!editor.isActive) editToggle.classList.remove('show'); }, 400); });
+editToggle.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+editToggle.addEventListener('mouseleave', () => { hideTimeout = setTimeout(() => { if (!editor.isActive) editToggle.classList.remove('show'); }, 400); });
+document.addEventListener('keydown', e => {
+  if ((e.key === 'e' || e.key === 'E') && !e.target.isContentEditable) editor.toggleEditMode();
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); editor.save(); editor.download(); }
+});
+document.addEventListener('input', () => editor.save());
+</script>
+</body>
+</html>
