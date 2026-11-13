@@ -8,17 +8,17 @@ autenticação com o token do usuário ME e ligação ao agente pelo Genius Back
 |---|---|
 | `ping` | Devolve `pong`, a mensagem enviada, a versão e a hora do servidor. |
 | `quem_sou_eu` | Mostra o usuário do token que o Genius repassou (formato, usuário, validade, claims de identificação e cabeçalhos `X-ME-*`). Nunca devolve o token inteiro. |
-| `esg_itens_do_pedido` | Passo 1 da estimativa de CO2. Lê o pedido no ME-DataHub e devolve fornecedor, local de entrega e itens. |
+| `esg_itens_do_pedido` | Passo 1 da estimativa de CO2. Lê o pedido, a requisição ou a cotação no ME-DataHub e devolve fornecedor, local de entrega e itens. |
 | `esg_estimar_co2_do_pedido` | Passo 2. Recebe o NAICS e o peso de cada item (classificados pelo Genius) e calcula kg CO2e de produto e de transporte, com as premissas. |
-| `esg_recomendar_fornecedores` | Busca fornecedores alternativos para os itens do pedido no recomendador do ME-DataHub e reordena a lista pelo CO2 do frete (distância até o local de entrega). |
+| `esg_recomendar_fornecedores` | Busca fornecedores alternativos para os itens de um pedido, requisição ou cotação no recomendador do ME-DataHub e reordena a lista pelo CO2 do frete (distância até o local de entrega). |
 
-## Guia rápido: estimativa de CO2 de um pedido
+## Guia rápido: estimativa de CO2 de um pedido, requisição ou cotação
 
-No Genius, com um usuário comprador, peça: **"analise o impacto ESG do pedido 29594155"**.
+No Genius, com um usuário comprador, peça: **"analise o impacto ESG do pedido 29594155"** (ou **"da requisição 39115867"**, **"da cotação 14505280"**).
 
-1. O Genius chama `esg_itens_do_pedido` com o número do pedido (número do ME ou número do pedido no cliente).
+1. O Genius chama `esg_itens_do_pedido` com `tipo` (`pedido`, padrão; `requisicao` ou `cotacao`) e `numero` (número do ME ou do cliente).
 2. O próprio Genius classifica cada item em um NAICS 2017 de 6 dígitos e estima o peso em kg por unidade.
-3. O Genius chama `esg_estimar_co2_do_pedido`. A tool relê o pedido no DataHub e calcula:
+3. O Genius chama `esg_estimar_co2_do_pedido` com o mesmo `tipo` e `numero`. A tool relê o documento no DataHub e calcula:
    - **CO2 do produto** = valor do item em US$ × fator USEEIO sem margens do NAICS;
    - **CO2 do transporte** = peso (t) × distância (km) × fator do modal. A distância é a linha reta entre o município do fornecedor e o da entrega × 1,3, com mínimo de 20 km.
 4. A resposta traz o total, o detalhe por item, os pesos custo x CO2 (padrão 0,7 e 0,3) e as **premissas**.
@@ -29,22 +29,22 @@ O que é dado real e o que é estimado:
 
 | Dado | Origem |
 |---|---|
-| Pedido, itens, valor, quantidade, fornecedor, local de entrega | ME-DataHub (GraphQL da fonte `meweb`), com token de serviço e filtro pelo tenant do usuário. Só pedidos da empresa dele. |
-| Câmbio R$ → US$ | PTAX de venda do Banco Central, na data do pedido. |
+| Documento, itens, valor, quantidade, fornecedor, local de entrega | ME-DataHub (GraphQL da fonte `meweb`), com token de serviço e filtro pelo tenant do usuário. Só documentos da empresa dele. Na requisição e na cotação, o valor é o preço estimado × a quantidade. |
+| Câmbio R$ → US$ | PTAX de venda do Banco Central, na data do pedido (na requisição e na cotação, a data de criação). |
 | Fator de emissão por categoria, coordenadas dos municípios | Tabelas públicas embutidas no binário (ver "Componentes externos"). |
 | NAICS e peso de cada item | Estimados pelo modelo do Genius. A tool valida o NAICS contra a tabela e devolve candidatos quando ele não existe. |
 
-Limites: é uma **triagem**, não um inventário auditável. O método por gasto compara categorias e pedidos; não diferencia fornecedores do mesmo item. A especificação completa está em `docs/spec-tool1-estimativa-co2_1.md`. Nesta versão só há **pedido**; requisição ficou fora.
+Limites: é uma **triagem**, não um inventário auditável. O método por gasto compara categorias e pedidos; não diferencia fornecedores do mesmo item. Requisição e cotação normalmente ainda não têm fornecedor: sem origem, o CO2 do transporte não é calculado (só o do produto); para comparar o frete, use `esg_recomendar_fornecedores`. A especificação completa está em `docs/spec-tool1-estimativa-co2_1.md`.
 
 ## Guia rápido: fornecedores alternativos com menor CO2 de frete
 
-No Genius, depois de analisar um pedido, peça: **"recomende fornecedores alternativos com menor emissão para o pedido 29594155"**.
+No Genius, peça: **"recomende fornecedores alternativos com menor emissão para o pedido 29594155"**. Funciona também com requisição e cotação: **"... para a requisição 39115867"** ou **"... para a cotação 14505280"**.
 
-1. O Genius chama `esg_itens_do_pedido` (se ainda não chamou) e monta, para cada item, as palavras da descrição que o identificam (`nucleo`).
-2. O Genius chama `esg_recomendar_fornecedores`. A tool relê o pedido no DataHub e chama o flow `recomendacao-fornecedores-recomendar`, que devolve quem já vendeu itens com essas palavras, com um score de 0 a 100 (preço, frete, prazo, pontualidade, capacidade e cobertura).
-3. A tool calcula a distância de cada fornecedor até o local de entrega do pedido e o CO2 do frete, e reordena a lista:
+1. O Genius chama `esg_recomendar_fornecedores` com `tipo` (`pedido`, padrão; `requisicao` ou `cotacao`) e `numero` (número do ME ou do cliente), sem itens. A tool lê o documento no DataHub, filtrado pela empresa do usuário, e devolve os itens ativos. Com esses itens, o Genius monta as palavras da descrição que identificam cada um (`nucleo`).
+2. O Genius chama `esg_recomendar_fornecedores` de novo, com o mesmo `tipo` e `numero` e os itens. A tool relê o documento e chama o flow `recomendacao-fornecedores-recomendar`, que devolve quem já vendeu itens com essas palavras, com um score de 0 a 100 (preço, frete, prazo, pontualidade, capacidade e cobertura).
+3. A tool calcula a distância de cada fornecedor até o local de entrega do documento e o CO2 do frete, e reordena a lista:
    **score final = (1 − `peso_co2`) × score do recomendador + `peso_co2` × nota de CO2 × 100**. A nota de CO2 vai de 0 a 1, e 1 é a menor distância entre os candidatos.
-4. A resposta traz o fornecedor atual do pedido como referência, as alternativas com a posição antes e depois do CO2, a diferença de CO2 do frete em relação ao atual e as **premissas**.
+4. A resposta traz o fornecedor atual como referência (só no pedido: requisição e cotação normalmente ainda não têm fornecedor), as alternativas com a posição antes e depois do CO2, a diferença de CO2 do frete em relação ao atual e as **premissas**.
 
 Parâmetros opcionais: `peso_co2` (padrão 0,3), `modal` e `top_n` (padrão 10).
 
