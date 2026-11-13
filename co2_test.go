@@ -41,6 +41,7 @@ type dataHubFake struct {
 	mu          sync.Mutex
 	tokens      int      // quantas vezes o token foi pedido
 	consultas   []string // corpos das chamadas GraphQL
+	flows       []string // corpos das chamadas ao flow do recomendador
 	formDoToken string
 }
 
@@ -80,9 +81,22 @@ func novoDataHubFake(t *testing.T) *dataHubFake {
 		}
 		_, _ = w.Write([]byte(pedidoFake))
 	})
+	mux.HandleFunc("/flows/recomendacao-fornecedores/recomendar", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+tokenServicoFake {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.flows = append(f.flows, string(body))
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(recomendacaoFake))
+	})
 	f.Server = httptest.NewServer(mux)
 	t.Cleanup(f.Close)
 
+	t.Setenv("DATAHUB_FLOWS_URL", f.URL+"/flows")
 	t.Setenv("DATAHUB_GRAPHQL_URL", f.URL+"/graphql")
 	t.Setenv("DATAHUB_TOKEN_URL", f.URL+"/oauth/token")
 	t.Setenv("CLIENT_ID", clientIDFake)

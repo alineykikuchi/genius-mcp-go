@@ -9,6 +9,7 @@
 //
 //	CLIENT_ID, CLIENT_SECRET  credenciais do client de serviço (obrigatórias)
 //	DATAHUB_GRAPHQL_URL       GraphQL da fonte meweb (padrão: Trunk)
+//	DATAHUB_FLOWS_URL         raiz dos flows REST (padrão: Trunk)
 //	DATAHUB_TOKEN_URL         endpoint de token (padrão: Trunk)
 package datahub
 
@@ -31,6 +32,8 @@ import (
 const (
 	// URLPadrao é o GraphQL da fonte meweb em Trunk.
 	URLPadrao = "https://trunk.datahub.me.com.br/_api/dp/meweb/graphql"
+	// FlowsURLPadrao é a raiz dos flows REST do DataHub em Trunk.
+	FlowsURLPadrao = "https://trunk.datahub.me.com.br/_api/flows"
 	// TokenURLPadrao é o endpoint de token do DataHub em Trunk.
 	TokenURLPadrao = "https://trunk.datahub.me.com.br/oauth/token"
 )
@@ -43,6 +46,7 @@ var ErrSemCredencial = errors.New("CLIENT_ID e CLIENT_SECRET não estão configu
 
 type Client struct {
 	URL          string
+	FlowsURL     string
 	TokenURL     string
 	ClientID     string
 	ClientSecret string
@@ -57,6 +61,7 @@ type Client struct {
 func NewFromEnv() *Client {
 	return &Client{
 		URL:          envOr("DATAHUB_GRAPHQL_URL", URLPadrao),
+		FlowsURL:     envOr("DATAHUB_FLOWS_URL", FlowsURLPadrao),
 		TokenURL:     envOr("DATAHUB_TOKEN_URL", TokenURLPadrao),
 		ClientID:     os.Getenv("CLIENT_ID"),
 		ClientSecret: os.Getenv("CLIENT_SECRET"),
@@ -278,20 +283,20 @@ func (c *Client) esquecerToken() {
 	c.mu.Unlock()
 }
 
-func (c *Client) do(ctx context.Context, query string, vars map[string]any, out any) error {
-	body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
-
+// post envia um JSON ao DataHub com o token de serviço e devolve o status e o
+// corpo da resposta.
+func (c *Client) post(ctx context.Context, endereco string, body []byte) (int, []byte, error) {
 	var status int
 	var raw []byte
 	// Se o DataHub recusar o token em cache, pede um novo e tenta mais uma vez.
 	for tentativa := 0; tentativa < 2; tentativa++ {
 		tok, err := c.serviceToken(ctx)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endereco, bytes.NewReader(body))
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
@@ -299,7 +304,7 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
-			return fmt.Errorf("DataHub indisponível: %w", err)
+			return 0, nil, fmt.Errorf("DataHub indisponível: %w", err)
 		}
 		raw, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
@@ -308,6 +313,16 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 			break
 		}
 		c.esquecerToken()
+	}
+	return status, raw, nil
+}
+
+func (c *Client) do(ctx context.Context, query string, vars map[string]any, out any) error {
+	body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
+
+	status, raw, err := c.post(ctx, c.URL, body)
+	if err != nil {
+		return err
 	}
 
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
