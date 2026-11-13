@@ -10,6 +10,7 @@ autenticação com o token do usuário ME e ligação ao agente pelo Genius Back
 | `quem_sou_eu` | Mostra o usuário do token que o Genius repassou (formato, usuário, validade, claims de identificação e cabeçalhos `X-ME-*`). Nunca devolve o token inteiro. |
 | `esg_itens_do_pedido` | Passo 1 da estimativa de CO2. Lê o pedido no ME-DataHub e devolve fornecedor, local de entrega e itens. |
 | `esg_estimar_co2_do_pedido` | Passo 2. Recebe o NAICS e o peso de cada item (classificados pelo Genius) e calcula kg CO2e de produto e de transporte, com as premissas. |
+| `esg_recomendar_fornecedores` | Busca fornecedores alternativos para os itens do pedido no recomendador do ME-DataHub e reordena a lista pelo CO2 do frete (distância até o local de entrega). |
 
 ## Guia rápido: estimativa de CO2 de um pedido
 
@@ -35,6 +36,25 @@ O que é dado real e o que é estimado:
 
 Limites: é uma **triagem**, não um inventário auditável. O método por gasto compara categorias e pedidos; não diferencia fornecedores do mesmo item. A especificação completa está em `docs/spec-tool1-estimativa-co2_1.md`. Nesta versão só há **pedido**; requisição ficou fora.
 
+## Guia rápido: fornecedores alternativos com menor CO2 de frete
+
+No Genius, depois de analisar um pedido, peça: **"recomende fornecedores alternativos com menor emissão para o pedido 29594155"**.
+
+1. O Genius chama `esg_itens_do_pedido` (se ainda não chamou) e monta, para cada item, as palavras da descrição que o identificam (`nucleo`).
+2. O Genius chama `esg_recomendar_fornecedores`. A tool relê o pedido no DataHub e chama o flow `recomendacao-fornecedores-recomendar`, que devolve quem já vendeu itens com essas palavras, com um score de 0 a 100 (preço, frete, prazo, pontualidade, capacidade e cobertura).
+3. A tool calcula a distância de cada fornecedor até o local de entrega do pedido e o CO2 do frete, e reordena a lista:
+   **score final = (1 − `peso_co2`) × score do recomendador + `peso_co2` × nota de CO2 × 100**. A nota de CO2 vai de 0 a 1, e 1 é a menor distância entre os candidatos.
+4. A resposta traz o fornecedor atual do pedido como referência, as alternativas com a posição antes e depois do CO2, a diferença de CO2 do frete em relação ao atual e as **premissas**.
+
+Parâmetros opcionais: `peso_co2` (padrão 0,3), `modal` e `top_n` (padrão 10).
+
+Limites:
+
+- **Só Trunk.** Os resolvers do recomendador não filtram por tenant: o score é calculado sobre o histórico de pedidos de todos os clientes. A tool não devolve preço nem descrição de pedidos de outros clientes, mas o flow é um protótipo e não deve ser apontado para dados reais.
+- O CO2 do produto não entra na comparação: no método por gasto ele não diferencia fornecedores do mesmo item. O que muda entre fornecedores é o frete.
+- O CO2 só reordena os `top_n` candidatos que o recomendador devolveu; não traz para a lista quem ficou fora desse corte.
+- A busca é por palavras da descrição do item, no máximo 12 alternativas por chamada, somando todos os itens.
+
 ## Componentes externos
 
 | Componente | Uso | Licença / origem |
@@ -43,7 +63,7 @@ Limites: é uma **triagem**, não um inventário auditável. O método por gasto
 | USEEIO / EPA *Supply Chain GHG Emission Factors* v1.3.0 (`internal/refdata/data/useeio_v1.3_naics_usd2022.csv`) | Fator kg CO2e por US$ de 2022, por NAICS 2017 | Dado público da EPA (EUA) |
 | [kelvins/municipios-brasileiros](https://github.com/kelvins/municipios-brasileiros) (`municipios.csv`, `estados.csv`) | Latitude e longitude dos municípios e das UFs (base IBGE) | MIT |
 | API PTAX do Banco Central (Olinda) | Câmbio R$ → US$, consultado a cada estimativa | Dado público, sem credencial |
-| ME-DataHub | Dados do pedido | Plataforma ME |
+| ME-DataHub | Dados do pedido (GraphQL) e recomendador de fornecedores (flow REST `recomendacao-fornecedores-recomendar`, resolver `recomendacao-fornecedores-ja-venderam` v2) | Plataforma ME |
 
 Rotas: `POST /mcp` (MCP via Streamable HTTP, sem estado) e `GET /healthz`.
 
@@ -90,6 +110,7 @@ curl -s http://localhost:8080/mcp \
 | `CLIENT_ID` | (sem padrão) | Client de serviço do ME-DataHub. **Obrigatória** para as tools de CO2. |
 | `CLIENT_SECRET` | (sem padrão) | Secret do client. **Obrigatória**; só em variável de ambiente, nunca no repositório. |
 | `DATAHUB_GRAPHQL_URL` | `https://trunk.datahub.me.com.br/_api/dp/meweb/graphql` | GraphQL da fonte `meweb` do ME-DataHub. Troque para apontar a outro ambiente. |
+| `DATAHUB_FLOWS_URL` | `https://trunk.datahub.me.com.br/_api/flows` | Raiz dos flows REST do ME-DataHub, usada pelo recomendador de fornecedores. |
 | `DATAHUB_TOKEN_URL` | `https://trunk.datahub.me.com.br/oauth/token` | Endpoint de token do ME-DataHub. |
 | `TENANT_CLAIM` | (vazio) | Nome da claim do token do Genius que traz o IdMain do usuário. Vazio tenta `tenantId`, `tenant_id`, `idMain`, `id_main`, `workflowId`, `workflow_id`. |
 | `TENANT_FILTRO` | (ligado) | `off` desliga o filtro por tenant. Só para demonstração: a tool passa a ler pedidos de qualquer cliente. |
