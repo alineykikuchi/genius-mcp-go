@@ -28,7 +28,7 @@ O que é dado real e o que é estimado:
 
 | Dado | Origem |
 |---|---|
-| Pedido, itens, valor, quantidade, fornecedor, local de entrega | ME-DataHub (GraphQL da fonte `meweb`), com o token do usuário. Só pedidos da empresa dele. |
+| Pedido, itens, valor, quantidade, fornecedor, local de entrega | ME-DataHub (GraphQL da fonte `meweb`), com token de serviço e filtro pelo tenant do usuário. Só pedidos da empresa dele. |
 | Câmbio R$ → US$ | PTAX de venda do Banco Central, na data do pedido. |
 | Fator de emissão por categoria, coordenadas dos municípios | Tabelas públicas embutidas no binário (ver "Componentes externos"). |
 | NAICS e peso de cada item | Estimados pelo modelo do Genius. A tool valida o NAICS contra a tabela e devolve candidatos quando ele não existe. |
@@ -52,9 +52,9 @@ Rotas: `POST /mcp` (MCP via Streamable HTTP, sem estado) e `GET /healthz`.
 1. A pessoa entra na plataforma ME e conversa com o Genius.
 2. O MCP é cadastrado no Genius Backoffice com `credential_mode: me_access_token`. Assim, o Genius chama este servidor enviando o token **do usuário logado** em `Authorization: Bearer <token>`.
 3. Este servidor recusa (HTTP 401) chamadas sem token ou com JWT expirado e entrega as claims às tools.
-4. Para buscar dados, a tool **repassa o mesmo token** às APIs da ME. Quem decide o que o usuário pode ver é a API da ME, então o agente só enxerga o que aquele usuário já enxerga.
+4. As tools de CO2 leem o ME-DataHub com um **token de serviço**, obtido com `CLIENT_ID` e `CLIENT_SECRET` (client credentials) e renovado sozinho antes de vencer. Esse token enxerga todos os clientes, então a tool lê o **tenant (IdMain) do usuário** nas claims do token do Genius e o usa como filtro obrigatório em toda consulta de pedido. Sem tenant no token, a tool não consulta nada.
 
-> ⚠️ A assinatura do JWT **não** é verificada aqui (`internal/token`). Isso basta enquanto as tools só ecoam dados ou repassam o token às APIs da ME. Antes de criar uma tool que use as claims para autorizar algo localmente, valide a assinatura contra o JWKS do IdP da ME.
+> ⚠️ A assinatura do JWT **não** é verificada aqui (`internal/token`). As tools de CO2 **confiam na claim de tenant** desse token para filtrar os pedidos. Limitação conhecida do MVP: quem conhecer a URL do MCP e montar um JWT com o tenant de outra empresa consegue ler pedidos dela. Antes de usar fora do hackathon, valide a assinatura contra o JWKS do IdP da ME.
 
 Nenhum segredo fica no código nem no repositório. O token chega a cada chamada e não é gravado em log.
 
@@ -87,7 +87,12 @@ curl -s http://localhost:8080/mcp \
 |---|---|---|
 | `PORT` | `8080` | Porta HTTP. O Railway define sozinho. |
 | `AUTH_MODE` | `require` | `require` exige o Bearer token; `off` só para teste local. |
+| `CLIENT_ID` | (sem padrão) | Client de serviço do ME-DataHub. **Obrigatória** para as tools de CO2. |
+| `CLIENT_SECRET` | (sem padrão) | Secret do client. **Obrigatória**; só em variável de ambiente, nunca no repositório. |
 | `DATAHUB_GRAPHQL_URL` | `https://trunk.datahub.me.com.br/_api/dp/meweb/graphql` | GraphQL da fonte `meweb` do ME-DataHub. Troque para apontar a outro ambiente. |
+| `DATAHUB_TOKEN_URL` | `https://trunk.datahub.me.com.br/oauth/token` | Endpoint de token do ME-DataHub. |
+| `TENANT_CLAIM` | (vazio) | Nome da claim do token do Genius que traz o IdMain do usuário. Vazio tenta `tenantId`, `tenant_id`, `idMain`, `id_main`, `workflowId`, `workflow_id`. |
+| `TENANT_FILTRO` | (ligado) | `off` desliga o filtro por tenant. Só para demonstração: a tool passa a ler pedidos de qualquer cliente. |
 
 ## 1. Subir no GitHub
 
@@ -109,7 +114,7 @@ O workflow em `.github/workflows/ci.yml` roda `go vet` e os testes a cada push.
    O `railway.json` já diz para usar o `Dockerfile` e checar `/healthz`.
 2. Em **Settings → Networking → Generate Domain**, gere a URL pública.
 3. Abra `https://<seu-dominio>.up.railway.app/healthz`. A resposta deve ser `{"status":"ok",...}`.
-4. Não precisa criar variável nenhuma: `AUTH_MODE` já vem como `require`.
+4. Em **Variables**, crie `CLIENT_ID` e `CLIENT_SECRET` (client de serviço do ME-DataHub). `AUTH_MODE` já vem como `require`.
 
 Cada push na `main` faz um deploy novo.
 
