@@ -5,12 +5,14 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"genius-mcp-go/internal/datahub"
 	"genius-mcp-go/internal/token"
 )
 
@@ -27,6 +29,8 @@ func Register(s *mcp.Server, version string) {
 			"(formato do token, usuário, validade, claims de identificação e cabeçalhos X-ME-* recebidos). " +
 			"Use quando pedirem para testar a autenticação ou 'quem sou eu'.",
 	}, whoAmI)
+
+	registerCO2(s, co2Deps{dh: datahub.NewFromEnv(), http: &http.Client{Timeout: 15 * time.Second}})
 }
 
 // ---- ping ------------------------------------------------------------------
