@@ -58,3 +58,30 @@ Os itens 6 a 8 saíram da revisão da precificação do carbono (13/11/2026). O 
 - **Problema:** a seção 6.5 da especificação pede resposta sem tabela quando o carbono pesa menos de 1% do valor. O plano 1 só aplica isso a um documento; na comparação entre alternativas a tool devolve sempre a tabela e o preço de virada, mesmo quando o carbono é irrelevante em todas.
 - **O que fazer:** decidir se a comparação também ganha esse caso (campo e texto em `como_responder`).
 - [ ] Resolvido
+
+Os itens 9 a 11 saíram da implementação do plano 4, local de entrega na recomendação (`docs/precificacao-carbono/plano-4-local-de-entrega-na-recomendacao.md`, 13/11/2026).
+
+## 9. Local de entrega na recomendação: falta validar no Genius
+
+- **O que mudou:** `esg_recomendar_fornecedores` passou a achar o destino nos itens buscados quando o cabeçalho não tem endereço reconhecido, e a aceitar `destino_municipio` e `destino_uf`. Os testes automatizados passam; o teste no Genius ainda não foi feito.
+- **O que fazer:** sincronizar as tools do MCP no Genius Backoffice de Trunk (a tool ganhou dois parâmetros e a descrição mudou) e conferir os dois critérios do plano: a recomendação para a requisição 54773517 traz a distância e o CO2 do frete até Osasco/SP; ao informar outra cidade de entrega no chat, a lista é recalculada com ela.
+- [ ] Validado no Genius
+
+## 10. Local de entrega na recomendação: decisões tomadas onde o plano 4 era omisso
+
+- **O que foi decidido:**
+  - `destino_por_uf` e a frase correspondente do `como_responder` aparecem sempre que o destino cai no ponto de referência da UF, venha ele do cabeçalho, dos itens ou do informado. A premissa "Município de entrega informado não reconhecido" fica só para o informado.
+  - Sem destino, a premissa de distância sai sem parêntese ("o da entrega"), em vez de citar o cabeçalho.
+  - Município sem UF (ou o contrário) e UF inválida devolvem erro antes de ler o documento, inclusive na chamada sem itens.
+  - Com destino informado, os avisos de locais diferentes entre os itens e de falha na leitura dos locais não aparecem, porque o destino do documento não foi usado.
+  - Com o cabeçalho reconhecido, ele vale mesmo que os itens buscados tenham um local próprio diferente (é a ordem de busca do plano). A estimativa (`esg_estimar_co2_do_pedido`) usa o local de cada item, então as duas tools podem mostrar destinos diferentes para o mesmo pedido.
+  - O DataHub falso dos testes (`co2_test.go`) passou a responder a consulta de locais e ganhou cinco requisições de teste; o plano supunha que isso já existia.
+- **O que fazer:** revisar as decisões; a do cabeçalho contra o local próprio do item é a que mais pode surpreender o comprador.
+- [ ] Revisado
+
+## 11. Portão de build: Go fora do PATH e `gofmt` com CRLF
+
+- **Problema:** a máquina onde o plano 4 foi executado não tem Go instalado; o portão rodou na imagem Docker `golang:1.25`. Além disso, `gofmt -l .` lista os arquivos `.go` só por causa do fim de linha: a cópia de trabalho está em CRLF (`core.autocrlf=true`) e o repositório em LF. O formato foi conferido removendo o CR antes.
+- **O que isso influencia:** o primeiro comando do portão do guia de execução (`gofmt -l .` não pode listar nenhum arquivo) nunca passa nessa máquina, mesmo com o código formatado.
+- **O que fazer:** fixar o fim de linha em LF para `.go` com um `.gitattributes` (`*.go text eol=lf`) e renormalizar a cópia de trabalho, ou ajustar o guia.
+- [ ] Resolvido
