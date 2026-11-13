@@ -253,7 +253,7 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 	origem := localizar(cidadeUF(o.Supplier))
 	// Destino: local do cabeçalho; o item pode ter um local próprio.
 	destinoCab := localizar(enderecoCidadeUF(o.DeliveryAddress))
-	locaisItem, err := d.locaisDosItens(ctx, o)
+	locaisItem, err := d.locaisDosItens(ctx, o, false)
 	if err != nil {
 		premissas.add("Não foi possível ler o local de entrega próprio de alguns itens; foi usado o local do cabeçalho do documento.")
 	}
@@ -548,8 +548,10 @@ func (d co2Deps) carregarPedido(ctx context.Context, req *mcp.CallToolRequest, n
 }
 
 // locaisDosItens resolve o local de entrega dos itens que têm um local próprio,
-// diferente do cabeçalho.
-func (d co2Deps) locaisDosItens(ctx context.Context, o *datahub.Order) (map[int]local, error) {
+// diferente do cabeçalho. Com incluirDoCabecalho, resolve também os itens cujo
+// local é o mesmo do cabeçalho: serve para quando o cabeçalho tem o id do local
+// mas não tem endereço reconhecido.
+func (d co2Deps) locaisDosItens(ctx context.Context, o *datahub.Order, incluirDoCabecalho bool) (map[int]local, error) {
 	out := map[int]local{}
 	if o.TenantID == nil {
 		return out, nil
@@ -559,7 +561,7 @@ func (d co2Deps) locaisDosItens(ctx context.Context, o *datahub.Order) (map[int]
 		if it.DeliveryPlaceID == nil || *it.DeliveryPlaceID <= 0 {
 			continue
 		}
-		if o.DeliveryPlaceID != nil && *it.DeliveryPlaceID == *o.DeliveryPlaceID {
+		if !incluirDoCabecalho && o.DeliveryPlaceID != nil && *it.DeliveryPlaceID == *o.DeliveryPlaceID {
 			continue
 		}
 		set[*it.DeliveryPlaceID] = true

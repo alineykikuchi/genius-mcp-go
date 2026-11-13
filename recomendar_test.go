@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Resposta do flow do recomendador, no formato visto em Trunk (valores trocados).
@@ -46,6 +49,10 @@ func TestRecomendarFornecedoresReordenaPeloCO2(t *testing.T) {
 	// fornecedor do pedido.
 	if a1["distancia_por_uf"] != true || a1["e_o_fornecedor_atual"] != true {
 		t.Fatalf("fornecedor com município desconhecido: %v", a1)
+	}
+	// O destino veio do cabeçalho do pedido.
+	if r["destino_origem"] != "cabecalho" || !contemTexto(r["premissas"], "o da entrega (cabeçalho do documento)") {
+		t.Fatalf("origem do destino: %v / %v", r["destino_origem"], r["premissas"])
 	}
 
 	// Carga = 3 un × 2 kg; CO2 do frete = 0,006 t × km × 0,10.
@@ -306,6 +313,191 @@ func TestCO2DeRequisicaoECotacao(t *testing.T) {
 		}
 		if b, _ := json.Marshal(p2["premissas"]); !strings.Contains(string(b), "ainda sem fornecedor") || !strings.Contains(string(b), "preço estimado") {
 			t.Fatalf("%s premissas: %s", c.tipo, b)
+		}
+	}
+}
+
+// ---- local de entrega: itens e destino informado ---------------------------
+
+// Requisições que o DataHub falso devolve para testar o local de entrega.
+const (
+	reqLocalNoItem      = "54773517" // sem local no cabeçalho; item com local 7 (Osasco/SP)
+	reqLocalSemEndereco = "54773518" // cabeçalho com o id do local, sem endereço; item no mesmo local
+	reqLocaisDiferentes = "54773519" // item 10 em Lages/SC; itens 20 e 30 em Osasco/SP
+	reqSemLocal         = "54773520" // sem local no cabeçalho nem nos itens
+	reqLocalComFalha    = "54773521" // item com o local 999: a leitura dos locais falha
+)
+
+const locaisFake = `{"data":{"addresses":{"items":[
+  {"placeId":7,"name":"SWIFT OSASCO KM 18","city":"OSASCO","state":"SP"},
+  {"placeId":8,"name":"FILIAL","city":"LAGES","state":"SC"}
+]}}}`
+
+// locaisDaConsultaFake responde a consulta de locais; o local 999 simula falha.
+func locaisDaConsultaFake(body string) string {
+	if strings.Contains(body, "999") {
+		return `{"errors":[{"message":"falha simulada"}]}`
+	}
+	return locaisFake
+}
+
+// requisicaoDeLocalFake devolve a requisição de teste pedida na consulta, se
+// for uma das de local de entrega.
+func requisicaoDeLocalFake(body string) (string, bool) {
+	item := func(n int, local string) string {
+		return `{"item":` + strconv.Itoa(n) + `,"quantity":3,"estimatedPrice":100,"measure":"UN","complement":null,"status":null,"local":` + local + `,"product":{"description":"ROTAMETRO"}}`
+	}
+	casos := map[string][2]string{
+		reqLocalNoItem:      {`"localEntrega":null,"deliveryAddress":null`, item(10, "7")},
+		reqLocalSemEndereco: {`"localEntrega":7,"deliveryAddress":null`, item(10, "7")},
+		reqLocaisDiferentes: {`"localEntrega":null,"deliveryAddress":null`, item(10, "8") + "," + item(20, "7") + "," + item(30, "7")},
+		reqSemLocal:         {`"localEntrega":null,"deliveryAddress":null`, item(10, "null")},
+		reqLocalComFalha:    {`"localEntrega":null,"deliveryAddress":null`, item(10, "999")},
+	}
+	for numero, c := range casos {
+		if strings.Contains(body, `"v":`+numero) || strings.Contains(body, `"v":"`+numero+`"`) {
+			return `{"data":{"requests":{"items":[{"id":"` + numero + `","clientCode":null,"tenantId":1920633,"statusFk":1,` + c[0] + `,"items":[` + c[1] + `]}]}}}`, true
+		}
+	}
+	return "", false
+}
+
+// recomendarNoDocumento chama a recomendação para os itens dados (2 kg por unidade).
+func recomendarNoDocumento(t *testing.T, cs *mcp.ClientSession, tipo, numero string, itens []int, extra map[string]any) map[string]any {
+	t.Helper()
+	var lista []map[string]any
+	for _, n := range itens {
+		lista = append(lista, map[string]any{"item": n, "nucleo": [][]string{{"rotametro"}}, "peso_kg_por_unidade": 2.0})
+	}
+	args := map[string]any{"tipo": tipo, "numero": numero, "itens": lista}
+	for k, v := range extra {
+		args[k] = v
+	}
+	return callJSON(t, cs, "esg_recomendar_fornecedores", args)
+}
+
+// semDistancia confere que nenhuma alternativa tem distância e que a nota de
+// CO2 ficou neutra.
+func semDistancia(t *testing.T, r map[string]any) {
+	t.Helper()
+	for _, v := range r["alternativas"].([]any) {
+		if a := v.(map[string]any); a["distancia_km"] != nil || a["nota_co2"].(float64) != 0.5 {
+			t.Fatalf("sem destino, a alternativa não devia ter distância: %v", a)
+		}
+	}
+}
+
+func TestRecomendarFornecedoresLocalDeEntregaDosItens(t *testing.T) {
+	novoDataHubFake(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+	destinoEh := func(r map[string]any, esperado string) bool {
+		d, _ := r["destino"].(string)
+		return strings.EqualFold(d, esperado)
+	}
+
+	// Local só no item, e cabeçalho com o id do local mas sem endereço: o destino
+	// sai dos itens e a distância é calculada.
+	for _, numero := range []string{reqLocalNoItem, reqLocalSemEndereco} {
+		r := recomendarNoDocumento(t, cs, "requisicao", numero, []int{10}, nil)
+		if !destinoEh(r, "Osasco/SP") || r["destino_origem"] != "itens" {
+			t.Fatalf("%s: destino %v (%v)", numero, r["destino"], r["destino_origem"])
+		}
+		if a := r["alternativas"].([]any)[0].(map[string]any); a["distancia_km"] == nil || a["co2_frete_kg"] == nil {
+			t.Fatalf("%s: esperava distância e CO2 do frete: %v", numero, a)
+		}
+		if !contemTexto(r["premissas"], "o da entrega (local de entrega dos itens)") {
+			t.Fatalf("%s: premissa de distância: %v", numero, r["premissas"])
+		}
+	}
+
+	// Locais diferentes: usa o que aparece em mais itens e avisa.
+	r := recomendarNoDocumento(t, cs, "requisicao", reqLocaisDiferentes, []int{10, 20, 30}, nil)
+	if !destinoEh(r, "Osasco/SP") || !contemTexto(r["premissas"], "locais de entrega diferentes") {
+		t.Fatalf("locais diferentes: destino %v, premissas %v", r["destino"], r["premissas"])
+	}
+	// Empate: vale o local do item de menor número.
+	r = recomendarNoDocumento(t, cs, "requisicao", reqLocaisDiferentes, []int{20, 10}, nil)
+	if !destinoEh(r, "Lages/SC") || !contemTexto(r["premissas"], "locais de entrega diferentes") {
+		t.Fatalf("empate: destino %v, premissas %v", r["destino"], r["premissas"])
+	}
+	// Só os itens buscados contam: buscando o item 20, não há local diferente.
+	r = recomendarNoDocumento(t, cs, "requisicao", reqLocaisDiferentes, []int{20}, nil)
+	if !destinoEh(r, "Osasco/SP") || contemTexto(r["premissas"], "locais de entrega diferentes") {
+		t.Fatalf("um item buscado: destino %v, premissas %v", r["destino"], r["premissas"])
+	}
+
+	// Sem destino em lugar nenhum: nota neutra e como_responder pede a cidade e a UF.
+	r = recomendarNoDocumento(t, cs, "requisicao", reqSemLocal, []int{10}, nil)
+	semDistancia(t, r)
+	if _, tem := r["destino_origem"]; tem || r["destino"] != nil {
+		t.Fatalf("sem destino: %v (%v)", r["destino"], r["destino_origem"])
+	}
+	if s, _ := r["como_responder"].(string); !strings.Contains(s, "peça a cidade e a UF de entrega") || !strings.Contains(s, "destino_municipio e destino_uf") {
+		t.Fatalf("como_responder sem destino: %q", s)
+	}
+
+	// Falha na leitura dos locais: a chamada segue sem destino, com aviso.
+	r = recomendarNoDocumento(t, cs, "requisicao", reqLocalComFalha, []int{10}, nil)
+	semDistancia(t, r)
+	if len(r["alternativas"].([]any)) != 3 || !contemTexto(r["premissas"], "Não foi possível ler o local de entrega dos itens") {
+		t.Fatalf("falha nos locais: %v", r["premissas"])
+	}
+}
+
+func TestRecomendarFornecedoresDestinoInformado(t *testing.T) {
+	novoDataHubFake(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+	osasco := map[string]any{"destino_municipio": "Osasco", "destino_uf": "sp"}
+
+	// Documento sem destino: a distância usa o informado.
+	r := recomendarNoDocumento(t, cs, "requisicao", reqSemLocal, []int{10}, osasco)
+	if d, _ := r["destino"].(string); !strings.EqualFold(d, "Osasco/SP") || r["destino_origem"] != "informado" {
+		t.Fatalf("destino informado: %v (%v)", r["destino"], r["destino_origem"])
+	}
+	if a := r["alternativas"].([]any)[0].(map[string]any); a["distancia_km"] == nil {
+		t.Fatalf("esperava distância: %v", a)
+	}
+	if contemTexto(r["premissas"], "Destino informado (") || !contemTexto(r["premissas"], "o da entrega (informado pelo usuário)") {
+		t.Fatalf("premissas: %v", r["premissas"])
+	}
+	if s, _ := r["como_responder"].(string); !strings.Contains(s, "local de entrega informado") {
+		t.Fatalf("como_responder: %q", s)
+	}
+
+	// Informado diferente do cabeçalho do pedido: vale o informado, com aviso.
+	r = recomendarNoDocumento(t, cs, "pedido", "29594155", []int{10}, osasco)
+	if d, _ := r["destino"].(string); !strings.EqualFold(d, "Osasco/SP") || r["destino_origem"] != "informado" ||
+		!contemTexto(r["premissas"], "diferente do local de entrega do documento") {
+		t.Fatalf("informado x cabeçalho: %v, premissas %v", r["destino"], r["premissas"])
+	}
+
+	// Município desconhecido com UF válida: ponto de referência da UF.
+	r = recomendarNoDocumento(t, cs, "requisicao", reqSemLocal, []int{10}, map[string]any{"destino_municipio": "Cidade Teste", "destino_uf": "SP"})
+	if r["destino_por_uf"] != true || r["alternativas"].([]any)[0].(map[string]any)["distancia_km"] == nil ||
+		!contemTexto(r["premissas"], "Município de entrega informado não reconhecido") {
+		t.Fatalf("destino pela UF: %v, premissas %v", r["destino_por_uf"], r["premissas"])
+	}
+	if s, _ := r["como_responder"].(string); !strings.Contains(s, "ponto de referência da UF") {
+		t.Fatalf("como_responder: %q", s)
+	}
+
+	// Só um dos campos e UF inexistente: erro da tool.
+	for _, c := range []struct {
+		extra map[string]any
+		msg   string
+	}{
+		{map[string]any{"destino_municipio": "Osasco"}, "Informe o município e a UF de entrega"},
+		{map[string]any{"destino_uf": "SP"}, "Informe o município e a UF de entrega"},
+		{map[string]any{"destino_municipio": "Osasco", "destino_uf": "XX"}, "UF de entrega inválida"},
+	} {
+		args := map[string]any{"tipo": "requisicao", "numero": reqSemLocal, "itens": []map[string]any{{"item": 10, "nucleo": [][]string{{"rotametro"}}}}}
+		for k, v := range c.extra {
+			args[k] = v
+		}
+		if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", args); !strings.Contains(msg, c.msg) {
+			t.Fatalf("esperava %q, veio: %s", c.msg, msg)
 		}
 	}
 }

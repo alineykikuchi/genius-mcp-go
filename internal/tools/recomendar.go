@@ -29,7 +29,9 @@ func registerRecomendacao(s *mcp.Server, d co2Deps) {
 			"Primeiro chame sem itens: a resposta traz os itens do documento. Para cada item, monte o nucleo: alternativas de palavras da descrição que identificam " +
 			"o item (ex.: [[\"CANETA\"],[\"BIC\",\"CRISTAL\"]]), uma palavra por elemento, sem código nem medida. No máximo 12 " +
 			"alternativas somando todos os itens. Informe também o peso em kg por unidade, se já tiver estimado. " +
-			"Siga o campo como_responder da resposta.",
+			"Siga o campo como_responder da resposta. " +
+			"Se o usuário informar a cidade de entrega, ou se ela já veio em outra tool de ESG para o mesmo documento, passe em destino_municipio e destino_uf. " +
+			"Não invente o local de entrega.",
 	}, d.recomendar)
 }
 
@@ -49,6 +51,9 @@ type RecomendarIn struct {
 	PesoCO2 *float64    `json:"peso_co2,omitempty" jsonschema:"peso do CO2 do frete no score final, de 0 a 1 (padrão 0.3); o restante é o score do recomendador"`
 	Modal   string      `json:"modal,omitempty" jsonschema:"rodoviario (padrão), ferroviario, cabotagem ou aereo"`
 	TopN    int         `json:"top_n,omitempty" jsonschema:"quantos fornecedores devolver (padrão 10, máximo 50)"`
+
+	DestinoMunicipio string `json:"destino_municipio,omitempty" jsonschema:"município de entrega, informado pelo usuário ou vindo de outra tool de ESG para o mesmo documento; use junto com destino_uf"`
+	DestinoUF        string `json:"destino_uf,omitempty" jsonschema:"sigla da UF de entrega, por exemplo SP"`
 
 	PrecoCarbonoBRLT *float64 `json:"preco_carbono_brl_t,omitempty" jsonschema:"preço do carbono em reais por tonelada, se o usuário informar; ausente usa o padrão"`
 }
@@ -99,6 +104,8 @@ type RecomendarOut struct {
 	ItensDoDocumento []ItemParaClassificar `json:"itens_do_documento,omitempty"`
 	ProximoPasso     string                `json:"proximo_passo,omitempty"`
 	Destino          string                `json:"destino,omitempty"`
+	DestinoOrigem    string                `json:"destino_origem,omitempty"` // informado, cabecalho ou itens
+	DestinoPorUF     bool                  `json:"destino_por_uf,omitempty"`
 	CargaKg          *float64              `json:"carga_kg"`
 	Modal            string                `json:"modal"`
 	Pesos            PesosRecomendacao     `json:"pesos"`
@@ -133,6 +140,10 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 	fatorModal, ok := co2.FatoresModal[modal]
 	if !ok {
 		return nil, out, fmt.Errorf("modal %q inválido: use rodoviario, ferroviario, cabotagem ou aereo", in.Modal)
+	}
+	informado, temInformado, err := destinoInformado(in.DestinoMunicipio, in.DestinoUF)
+	if err != nil {
+		return nil, out, err
 	}
 	topN := in.TopN
 	switch {
@@ -225,9 +236,23 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		return nil, out, err
 	}
 
-	// Destino: local de entrega do cabeçalho do documento.
-	destino := localizar(enderecoCidadeUF(o.DeliveryAddress))
+	// Destino: o informado na chamada, depois o cabeçalho do documento, depois o
+	// local de entrega dos itens buscados. O informado vale só para esta chamada.
+	destino, origemDestino := d.destinoDoDocumento(ctx, o, busca, premissas, !temInformado)
+	if temInformado {
+		rotulo := informado.rotulo
+		if informado.porUF {
+			rotulo = juntar(in.DestinoMunicipio, strings.ToUpper(in.DestinoUF))
+			premissas.add("Município de entrega informado não reconhecido: a distância usou o ponto de referência da UF.")
+		}
+		if destino.ok && destino.rotulo != informado.rotulo {
+			premissas.add(fmt.Sprintf("Destino informado (%s) diferente do local de entrega do documento (%s).", rotulo, destino.rotulo))
+		}
+		destino, origemDestino = informado, "informado"
+	}
 	out.Destino = destino.rotulo
+	out.DestinoOrigem = origemDestino
+	out.DestinoPorUF = destino.ok && destino.porUF
 	if !destino.ok {
 		premissas.add("Município e UF de entrega ausentes ou não reconhecidos: sem distância, a nota de CO2 ficou neutra (0,5) para todos e a ordem é a do recomendador.")
 	}
@@ -321,8 +346,17 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 	premissas.add(fmt.Sprintf("Score final = %.0f%% do score do recomendador + %.0f%% da nota de CO2. A nota de CO2 vai de 0 a 1 (1 = menor distância entre os candidatos).",
 		(1-pesoCO2)*100, pesoCO2*100))
 	premissas.add(fmt.Sprintf("O CO2 só reordena os %d primeiros candidatos do recomendador; não traz para a lista quem ficou fora desse corte.", topN))
-	premissas.add(fmt.Sprintf("Distância = linha reta entre o município do fornecedor e o da entrega (cabeçalho do documento) × %.1f, com mínimo de %.0f km; modal %s %s; fator de %.3f kg CO2e por t·km (%s).",
-		co2.FatorSinuosidade, co2.DistanciaMinimaKm, modal, m, fatorModal, co2.FonteModal))
+	fonteDestino := ""
+	switch origemDestino {
+	case "informado":
+		fonteDestino = " (informado pelo usuário)"
+	case "cabecalho":
+		fonteDestino = " (cabeçalho do documento)"
+	case "itens":
+		fonteDestino = " (local de entrega dos itens)"
+	}
+	premissas.add(fmt.Sprintf("Distância = linha reta entre o município do fornecedor e o da entrega%s × %.1f, com mínimo de %.0f km; modal %s %s; fator de %.3f kg CO2e por t·km (%s).",
+		fonteDestino, co2.FatorSinuosidade, co2.DistanciaMinimaKm, modal, m, fatorModal, co2.FonteModal))
 	premissas.add("O CO2 do produto não entra na comparação: no método por gasto ele não diferencia fornecedores do mesmo item. Entre fornecedores, o que muda é o frete, que costuma ser parcela pequena do total.")
 	premissas.add("Peso dos itens estimado por IA. Resultado de triagem: não substitui inventário de emissões auditado nem a homologação do fornecedor.")
 
@@ -362,16 +396,80 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 			}
 		}
 	}
-	out.ComoResponder = comoResponderRecomendacao(out.CargaKg != nil, temDelta, precoCarbono.Origem == "usuario", len(avisosPreco) > 0)
+	out.ComoResponder = comoResponderRecomendacao(out.CargaKg != nil, temDelta, precoCarbono.Origem == "usuario", len(avisosPreco) > 0, out.DestinoOrigem, out.DestinoPorUF)
 	out.Premissas = premissas.lista
 	return nil, out, nil
 }
 
+// destinoInformado valida o destino informado na chamada: município e UF vêm
+// juntos e a UF precisa existir. Município desconhecido cai no ponto da UF.
+func destinoInformado(municipio, uf string) (l local, tem bool, err error) {
+	municipio, uf = strings.TrimSpace(municipio), strings.ToUpper(strings.TrimSpace(uf))
+	if municipio == "" && uf == "" {
+		return local{}, false, nil
+	}
+	if municipio == "" || uf == "" {
+		return local{}, false, fmt.Errorf("Informe o município e a UF de entrega.")
+	}
+	if _, ok := refdata.CentroideUF(uf); !ok {
+		return local{}, false, fmt.Errorf("UF de entrega inválida: use a sigla, por exemplo SP.")
+	}
+	return localizar(municipio, uf), true, nil
+}
+
+// destinoDoDocumento acha o local de entrega no documento: primeiro o do
+// cabeçalho; sem ele, o dos itens buscados (o que aparece em mais itens; em
+// empate, o do item de menor número). Devolve também a origem: "cabecalho",
+// "itens" ou vazio. Com avisar, registra nas premissas a falha de leitura e os
+// locais diferentes.
+func (d co2Deps) destinoDoDocumento(ctx context.Context, o *datahub.Order, busca []datahub.ItemBusca, premissas *premissas, avisar bool) (local, string) {
+	if l := localizar(enderecoCidadeUF(o.DeliveryAddress)); l.ok {
+		return l, "cabecalho"
+	}
+	// Inclui os itens com o mesmo local do cabeçalho: ele não tem endereço reconhecido.
+	locais, err := d.locaisDosItens(ctx, o, true)
+	if err != nil {
+		if avisar {
+			premissas.add("Não foi possível ler o local de entrega dos itens: a recomendação seguiu sem local de entrega.")
+		}
+		return local{}, ""
+	}
+	numeros := make([]int, 0, len(busca))
+	for _, b := range busca {
+		numeros = append(numeros, b.Item)
+	}
+	sort.Ints(numeros)
+	vezes := map[string]int{}
+	for _, n := range numeros {
+		if l, ok := locais[n]; ok && l.ok {
+			vezes[l.rotulo]++
+		}
+	}
+	var melhor local
+	for _, n := range numeros {
+		if l, ok := locais[n]; ok && l.ok && (!melhor.ok || vezes[l.rotulo] > vezes[melhor.rotulo]) {
+			melhor = l
+		}
+	}
+	if !melhor.ok {
+		return local{}, ""
+	}
+	if len(vezes) > 1 && avisar {
+		premissas.add(fmt.Sprintf("Os itens buscados têm locais de entrega diferentes; a distância usou %s. Para os outros locais, busque os itens em chamadas separadas.", melhor.rotulo))
+	}
+	return melhor, "itens"
+}
+
 // comoResponderRecomendacao monta a orientação de resposta da recomendação.
 // temPeso: há CO2 do frete em kg. temDelta: há fornecedor atual para comparar.
-func comoResponderRecomendacao(temPeso, temDelta, precoDoUsuario, precoIncomum bool) string {
+// destinoOrigem: de onde veio o local de entrega (vazio = não encontrado).
+func comoResponderRecomendacao(temPeso, temDelta, precoDoUsuario, precoIncomum bool, destinoOrigem string, destinoPorUF bool) string {
 	var partes []string
 	switch {
+	case destinoOrigem == "":
+		partes = append(partes, "O local de entrega não foi encontrado no documento. Apresente os fornecedores na ordem do recomendador, "+
+			"em uma tabela curta com Fornecedor e Origem, diga em uma frase que falta o local de entrega para calcular distância e CO2 do frete, "+
+			"e peça a cidade e a UF de entrega. Quando o usuário responder, chame a tool de novo com destino_municipio e destino_uf.")
 	case !temPeso:
 		partes = append(partes, "O CO2e em kg não foi calculado porque falta o peso; apresente só a ordem por distância, "+
 			"em uma tabela curta com Fornecedor, Origem e Distância.")
@@ -390,6 +488,12 @@ func comoResponderRecomendacao(temPeso, temDelta, precoDoUsuario, precoIncomum b
 		}
 		partes = append(partes, p,
 			"Mostre uma tabela curta com Fornecedor, Origem, Distância, CO2e do frete e Carbono evitado.")
+	}
+	if destinoOrigem == "informado" {
+		partes = append(partes, "Diga que a distância usou o local de entrega informado (destino).")
+	}
+	if destinoPorUF {
+		partes = append(partes, "Diga que o município não foi reconhecido e que a distância é aproximada, pelo ponto de referência da UF.")
 	}
 	partes = append(partes,
 		"Diga quem já vendeu à empresa do usuário (ja_vendeu_a_sua_empresa).",

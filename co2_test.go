@@ -84,6 +84,14 @@ func novoDataHubFake(t *testing.T) *dataHubFake {
 			_, _ = w.Write([]byte(`{"data":{"orders":{"items":[]}}}`))
 			return
 		}
+		if strings.Contains(string(body), "addresses(") {
+			_, _ = w.Write([]byte(locaisDaConsultaFake(string(body))))
+			return
+		}
+		if req, ok := requisicaoDeLocalFake(string(body)); ok {
+			_, _ = w.Write([]byte(req))
+			return
+		}
 		switch {
 		case strings.Contains(string(body), `"v":`+pedidoEmDolar) || strings.Contains(string(body), `"v":"`+pedidoEmDolar+`"`):
 			_, _ = w.Write([]byte(strings.Replace(pedidoFake, `"currency":"BRL"`, `"currency":"USD"`, 1)))
