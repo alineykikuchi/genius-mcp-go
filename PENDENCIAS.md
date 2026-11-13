@@ -18,7 +18,8 @@ Levantadas no primeiro teste da tool de estimativa de CO2 no Genius (13/11/2026)
 
 - **Problema:** a resposta trouxe "A resposta não trouxe lista de campos vazios". O campo `campos_vazios` é `omitempty` (`internal/tools/co2.go:162`) e o modelo comentou que ele não veio.
 - **O que fazer:** instruir, no prompt do agente ou na descrição da tool, a só mencionar campos vazios quando existirem.
-- [ ] Resolvido
+- **Como foi resolvido:** `esg_estimar_co2_do_pedido` passou a devolver o campo `como_responder`, que traz a instrução "Cite campos_vazios e campos_estimados só quando existirem na resposta; não comente a ausência deles", e a descrição da tool manda seguir esse campo. Falta só conferir no Genius, depois de sincronizar as tools.
+- [x] Resolvido
 
 ## 4. Fator em US$ de 2022 convertido com câmbio corrente
 

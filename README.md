@@ -23,6 +23,7 @@ No Genius, com um usuário comprador, peça: **"analise o impacto ESG do pedido 
    - **CO2 do produto** = valor do item em US$ × fator USEEIO sem margens do NAICS;
    - **CO2 do transporte** = peso (t) × distância (km) × fator do modal. A distância é a linha reta entre o município do fornecedor e o da entrega × 1,3, com mínimo de 20 km.
 4. A resposta traz o total, o detalhe por item, os pesos custo x CO2 (padrão 0,7 e 0,3) e as **premissas**.
+5. A resposta já traz o valor do carbono em reais (bloco `carbono`: custo do carbono e, quando o documento está em reais, custo com carbono e peso sobre o valor) e o campo `como_responder`, que diz ao Genius como montar a resposta. Com `preco_carbono_brl_t`, o usuário troca o preço de R$ 500 por tonelada.
 
 Parâmetros opcionais, que podem ser ditos na conversa: `modal` (rodoviario, ferroviario, cabotagem, aereo), `peso_custo` e `peso_co2`.
 
@@ -46,6 +47,7 @@ No Genius, peça: **"recomende fornecedores alternativos com menor emissão para
 3. A tool calcula a distância de cada fornecedor até o local de entrega do documento e o CO2 do frete, e reordena a lista:
    **score final = (1 − `peso_co2`) × score do recomendador + `peso_co2` × nota de CO2 × 100**. A nota de CO2 vai de 0 a 1, e 1 é a menor distância entre os candidatos.
 4. A resposta traz o fornecedor atual como referência (só no pedido: requisição e cotação normalmente ainda não têm fornecedor), as alternativas com a posição antes e depois do CO2, a diferença de CO2 do frete em relação ao atual e as **premissas**.
+5. A resposta já traz o valor do carbono em reais: quando há peso da carga e fornecedor atual, cada alternativa vem com o carbono do frete evitado (`carbono_frete_evitado_brl`), ao preço de R$ 500 por tonelada ou ao informado em `preco_carbono_brl_t`. O campo `como_responder` diz ao Genius como montar a resposta. A lista não traz preço dos fornecedores: a comparação pelo custo com carbono é feita com `esg_precificar_carbono`, com os preços informados pelo comprador.
 
 Parâmetros opcionais: `peso_co2` (padrão 0,3), `modal` e `top_n` (padrão 10).
 
