@@ -24,6 +24,7 @@ No Genius, com um usuário comprador, peça: **"analise o impacto ESG do pedido 
    - **CO2 do transporte** = peso (t) × distância (km) × fator do modal. A distância é a linha reta entre o município do fornecedor e o da entrega × 1,3, com mínimo de 20 km.
 4. A resposta traz o total, o detalhe por item, os pesos custo x CO2 (padrão 0,7 e 0,3) e as **premissas**.
 5. A resposta já traz o valor do carbono em reais (bloco `carbono`: custo do carbono e, quando o documento está em reais, custo com carbono e peso sobre o valor) e o campo `como_responder`, que diz ao Genius como montar a resposta. Com `preco_carbono_brl_t`, o usuário troca o preço de R$ 500 por tonelada.
+6. A resposta ao comprador é curta (cerca de 10 linhas): o bloco `resumo` traz o total formatado, o veredito (`baixo`, `medio` ou `alto`, pelo peso do carbono sobre o valor da compra), o item que concentra o impacto e a confiança. As **premissas** continuam na saída da tool, mas só aparecem na conversa a pedido ("ver premissas", "como calculou?").
 
 Parâmetros opcionais, que podem ser ditos na conversa: `modal` (rodoviario, ferroviario, cabotagem, aereo), `peso_custo` e `peso_co2`.
 
@@ -147,6 +148,8 @@ curl -s http://localhost:8080/mcp \
 | `TENANT_CLAIM` | (vazio) | Nome da claim do token do Genius que traz o IdMain do usuário. Vazio tenta `tenantId`, `tenant_id`, `idMain`, `id_main`, `workflowId`, `workflow_id`. |
 | `TENANT_FILTRO` | (ligado) | `off` desliga o filtro por tenant. Só para demonstração: a tool passa a ler pedidos de qualquer cliente. |
 | `PRECO_CARBONO_BRL_T` | `500` | Preço de referência do carbono, em reais por tonelada de CO2e. |
+| `FAIXA_CARBONO_BAIXO_PCT` | `1` | Veredito da estimativa: peso do carbono sobre o valor da compra abaixo deste percentual é `baixo`. |
+| `FAIXA_CARBONO_ALTO_PCT` | `5` | Veredito da estimativa: a partir deste percentual é `alto`; entre as duas faixas, `medio`. Valor inválido, ou baixo maior ou igual ao alto, usa o padrão (1 e 5). |
 
 ## 1. Subir no GitHub
 

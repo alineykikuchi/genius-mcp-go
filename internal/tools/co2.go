@@ -43,6 +43,9 @@ type co2Deps struct {
 	// precoCarbono: preço padrão do carbono, em reais por tonelada de CO2e
 	// (PRECO_CARBONO_BRL_T). Zero = carbono.PrecoPadraoBRLT.
 	precoCarbono float64
+	// faixas: limites do veredito do peso do carbono (FAIXA_CARBONO_BAIXO_PCT e
+	// FAIXA_CARBONO_ALTO_PCT). Zero = faixas padrão.
+	faixas FaixasCarbono
 }
 
 func registerCO2(s *mcp.Server, d co2Deps) {
@@ -170,6 +173,14 @@ type ItemEstimado struct {
 	CO2TransporteKg *float64        `json:"co2_transporte_kg"`
 	CamposEstimados []string        `json:"campos_estimados,omitempty"`
 	CamposVazios    []string        `json:"campos_vazios,omitempty"`
+
+	// Campos prontos para a resposta: CO2e do item (produto + transporte, o que
+	// existir), formatos e parte do item no total.
+	CO2eKg     *float64 `json:"co2e_kg,omitempty"`
+	CO2eFmt    string   `json:"co2e_fmt,omitempty"`
+	ValorFmt   string   `json:"valor_fmt,omitempty"`
+	PctDoTotal *float64 `json:"pct_do_total,omitempty"`
+	PctFmt     string   `json:"pct_fmt,omitempty"`
 }
 
 type Pesos struct {
@@ -188,6 +199,7 @@ type EstimarOut struct {
 	Premissas []string       `json:"premissas"`
 
 	Carbono       *CarbonoDocumento `json:"carbono,omitempty"`
+	Resumo        ResumoEstimativa  `json:"resumo"`
 	ComoResponder string            `json:"como_responder"`
 }
 
@@ -262,6 +274,8 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 
 	var somaProd, somaTransp, somaValorBRL float64
 	var temProd, temTransp bool
+	// Itens sem CO2 de transporte, pelo motivo: sem distância ou sem peso.
+	var semDistancia, semPeso bool
 
 	for _, it := range o.Items {
 		if it.Canceled != nil && *it.Canceled {
@@ -349,6 +363,10 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 		if e.CO2TransporteKg != nil {
 			somaTransp += *e.CO2TransporteKg
 			temTransp = true
+		} else if e.DistanciaKm == nil {
+			semDistancia = true
+		} else {
+			semPeso = true
 		}
 		if e.Valor != nil && (e.CO2ProdutoKg != nil || e.CO2TransporteKg != nil) {
 			switch {
@@ -385,10 +403,6 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 	premissas.add("Resultado de triagem: não substitui inventário de emissões auditado.")
 
 	// Valor do carbono em reais: só quando há total de CO2e.
-	confiancaBaixa := false
-	for _, e := range out.Itens {
-		confiancaBaixa = confiancaBaixa || e.BaixaConfianca
-	}
 	if out.CO2.TotalKg != nil {
 		// O valor do documento só entra na conta quando está em reais.
 		var valor *float64
@@ -412,45 +426,25 @@ func (d co2Deps) estimarCO2(ctx context.Context, req *mcp.CallToolRequest, in Es
 			premissas.add(a)
 		}
 	}
-	out.ComoResponder = comoResponderEstimativa(out.Carbono, len(avisosPreco) > 0, confiancaBaixa)
+
+	var falta *FaltaTransporte
+	if semDistancia || semPeso {
+		motivo := "falta o peso ou a quantidade do item"
+		switch {
+		case o.Supplier == nil:
+			motivo = "o documento ainda não tem fornecedor, então não há origem para calcular o frete"
+		case semDistancia:
+			motivo = "o município do fornecedor ou da entrega não foi reconhecido"
+		}
+		if temTransp {
+			motivo = "em parte dos itens, " + motivo
+		}
+		falta = &FaltaTransporte{Motivo: motivo}
+	}
+	resumirEstimativa(&out, out.Carbono, d.faixasCarbono(), falta)
+	out.ComoResponder = comoResponderEstimativa(out.Carbono, out.Resumo, len(out.Itens), len(avisosPreco) > 0)
 	out.Premissas = premissas.lista
 	return nil, out, nil
-}
-
-// comoResponderEstimativa monta a orientação de resposta da estimativa de CO2.
-// doc é nil quando não houve total de CO2e para precificar.
-func comoResponderEstimativa(doc *CarbonoDocumento, precoIncomum, confiancaBaixa bool) string {
-	var partes []string
-	if doc == nil {
-		partes = append(partes, "Diga que o CO2e do documento não pôde ser calculado e explique o motivo com as premissas e os campos_vazios dos itens. Não cite valor do carbono.")
-	} else {
-		p := "Diga quanto CO2e o documento emite (produto e transporte) e quanto isso vale em carbono (carbono.custo_carbono_fmt), deixando claro que é valor de referência e não é cobrado."
-		if doc.PrecoCarbono.Origem == "usuario" {
-			p += " O preço por tonelada foi informado pelo usuário: escreva 'valor informado por você' no lugar de 'referência (EU ETS)'."
-		}
-		partes = append(partes, p)
-		switch {
-		case doc.CarbonoIrrelevante:
-			partes = append(partes, "Diga que o carbono pesa menos de 1% do valor.")
-		case doc.PesoCarbonoPercentual != nil:
-			partes = append(partes, "Diga o peso do carbono sobre o valor do documento (carbono.peso_carbono_fmt).")
-		default:
-			partes = append(partes, "Não cite custo com carbono nem percentual: não há valor do documento em reais.")
-		}
-	}
-	if confiancaBaixa {
-		partes = append(partes, "Diga quais itens têm baixa confiança e que o resultado é uma indicação.")
-	}
-	partes = append(partes, frasesExtras(precoIncomum && doc != nil, false)...)
-	partes = append(partes,
-		"Cite campos_vazios e campos_estimados só quando existirem na resposta; não comente a ausência deles.",
-		"Apresente as premissas em uma ou duas frases, não em lista.")
-	if doc == nil {
-		partes = append(partes, "Não recalcule nem invente valores.")
-	} else {
-		partes = append(partes, "Ofereça ver fornecedores alternativos com menos CO2e ou recalcular com outro preço por tonelada, em reais. Não recalcule nem invente valores.")
-	}
-	return numerar(partes)
 }
 
 // ---- apoio -----------------------------------------------------------------

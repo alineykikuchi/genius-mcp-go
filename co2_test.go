@@ -34,6 +34,9 @@ const (
 	tokenServicoFake = "token-de-servico-fake"
 	// pedidoEmDolar: número que faz o DataHub falso devolver o pedido em USD.
 	pedidoEmDolar = "777001"
+	// pedidoDoisItens: número que faz o DataHub falso devolver o pedido com o
+	// segundo item ativo (dois itens no total).
+	pedidoDoisItens = "777002"
 )
 
 // dataHubFake simula o endpoint de token e o GraphQL do DataHub, e guarda o que
@@ -84,6 +87,8 @@ func novoDataHubFake(t *testing.T) *dataHubFake {
 		switch {
 		case strings.Contains(string(body), `"v":`+pedidoEmDolar) || strings.Contains(string(body), `"v":"`+pedidoEmDolar+`"`):
 			_, _ = w.Write([]byte(strings.Replace(pedidoFake, `"currency":"BRL"`, `"currency":"USD"`, 1)))
+		case strings.Contains(string(body), `"v":`+pedidoDoisItens) || strings.Contains(string(body), `"v":"`+pedidoDoisItens+`"`):
+			_, _ = w.Write([]byte(strings.Replace(pedidoFake, `"canceled":true`, `"canceled":false`, 1)))
 		case strings.Contains(string(body), "requests("):
 			_, _ = w.Write([]byte(requisicaoFake))
 		case strings.Contains(string(body), "rfqs("):
@@ -255,7 +260,7 @@ func TestEstimativaTrazOValorDoCarbono(t *testing.T) {
 		t.Fatalf("bloco carbono: %v", c)
 	}
 	s, _ := r["como_responder"].(string)
-	if !strings.Contains(s, "carbono.custo_carbono_fmt") || strings.Contains(s, "baixa confiança") {
+	if !strings.Contains(s, "carbono.custo_carbono_fmt") || strings.Contains(s, "confiança baixa") {
 		t.Fatalf("como_responder: %q", s)
 	}
 	if !contemTexto(r["premissas"], "não é cobrado") || !contemTexto(r["premissas"], "R$ 500/t") {
@@ -286,7 +291,7 @@ func TestEstimativaTrazOValorDoCarbono(t *testing.T) {
 
 	// Item com baixa confiança: como_responder manda dizer isso.
 	b := estimar("29594155", 0.4, nil)
-	if s, _ := b["como_responder"].(string); !strings.Contains(s, "baixa confiança") {
+	if s, _ := b["como_responder"].(string); !strings.Contains(s, "confiança baixa") {
 		t.Fatalf("como_responder sem a parte de baixa confiança: %q", s)
 	}
 
@@ -295,6 +300,150 @@ func TestEstimativaTrazOValorDoCarbono(t *testing.T) {
 		"numero": "29594155", "itens": []map[string]any{}, "preco_carbono_brl_t": -10,
 	}); !strings.Contains(msg, "reais por tonelada") {
 		t.Fatalf("mensagem: %s", msg)
+	}
+}
+
+func TestEstimativaDevolveOResumo(t *testing.T) {
+	novoDataHubFake(t)
+	fakePTAX(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+	item := func(n int, confianca float64) map[string]any {
+		return map[string]any{"item": n, "naics": "334513", "peso_kg_por_unidade": 2.0, "confianca": confianca}
+	}
+	estimar := func(args map[string]any) map[string]any {
+		return callJSON(t, cs, "esg_estimar_co2_do_pedido", args)
+	}
+	resumoDe := func(r map[string]any) map[string]any { return r["resumo"].(map[string]any) }
+	// Vale para qualquer estimativa: resposta sem premissas, mas com elas na saída.
+	conferirPremissas := func(nome string, r map[string]any) {
+		t.Helper()
+		if s, _ := r["como_responder"].(string); !strings.Contains(s, "NÃO mostre premissas") {
+			t.Fatalf("%s: como_responder devia mandar não mostrar premissas: %q", nome, s)
+		}
+		if len(r["premissas"].([]any)) < 5 {
+			t.Fatalf("%s: premissas deviam continuar na saída: %v", nome, r["premissas"])
+		}
+	}
+
+	// Um item: sem item_principal, sem tabela, faixas padrão.
+	um := estimar(map[string]any{"numero": "29594155", "itens": []map[string]any{item(10, 0.9)}})
+	conferirPremissas("um item", um)
+	ru := resumoDe(um)
+	if _, tem := ru["item_principal"]; tem {
+		t.Fatalf("um item só não devia trazer item_principal: %v", ru)
+	}
+	if _, tem := ru["falta_transporte"]; tem {
+		t.Fatalf("pedido com fornecedor não devia trazer falta_transporte: %v", ru)
+	}
+	if s, _ := ru["total_fmt"].(string); !strings.HasSuffix(s, " kg") {
+		t.Fatalf("total_fmt: %v", ru)
+	}
+	if f := ru["faixas"].(map[string]any); f["baixo_ate_pct"].(float64) != 1 || f["alto_a_partir_pct"].(float64) != 5 || f["origem"] != "padrao" {
+		t.Fatalf("faixas padrão: %v", f)
+	}
+	if s := um["como_responder"].(string); !strings.Contains(s, "Não use tabela") || strings.Contains(s, "falta o transporte") {
+		t.Fatalf("como_responder de um item: %q", s)
+	}
+	iu := um["itens"].([]any)[0].(map[string]any)
+	prod, transp := iu["co2_produto_kg"].(float64), iu["co2_transporte_kg"].(float64)
+	if kg := iu["co2e_kg"].(float64); kg < prod+transp-0.011 || kg > prod+transp+0.011 {
+		t.Fatalf("co2e_kg do item: %v", iu)
+	}
+	if iu["valor_fmt"] != "R$ 5.614,30" || iu["pct_fmt"] != "100%" || iu["co2e_fmt"] != ru["total_fmt"] {
+		t.Fatalf("campos prontos do item: %v", iu)
+	}
+
+	// Dois itens: o principal é o de maior CO2e e as partes somam 100.
+	dois := estimar(map[string]any{"numero": pedidoDoisItens, "itens": []map[string]any{item(10, 0.9), item(20, 0.9)}})
+	conferirPremissas("dois itens", dois)
+	if p, _ := resumoDe(dois)["item_principal"].(map[string]any); p == nil || p["item"].(float64) != 10 || p["pct_fmt"] == "" {
+		t.Fatalf("item_principal: %v", resumoDe(dois))
+	}
+	soma := 0.0
+	for _, i := range dois["itens"].([]any) {
+		soma += i.(map[string]any)["pct_do_total"].(float64)
+	}
+	if soma < 99.9 || soma > 100.1 {
+		t.Fatalf("pct_do_total devia somar 100, somou %v", soma)
+	}
+	if s := dois["como_responder"].(string); !strings.Contains(s, "UMA tabela") || !strings.Contains(s, "resumo.item_principal") {
+		t.Fatalf("como_responder de dois itens: %q", s)
+	}
+
+	// Veredito pelo peso do carbono sobre o valor: o preço por tonelada é
+	// escolhido para o peso dar 0,5%, 3% e 8% de R$ 5.614,30.
+	total := um["co2"].(map[string]any)["total_kg"].(float64)
+	for _, c := range []struct {
+		pct      float64
+		veredito string
+	}{{0.5, "baixo"}, {3, "medio"}, {8, "alto"}} {
+		r := estimar(map[string]any{
+			"numero": "29594155", "itens": []map[string]any{item(10, 0.9)},
+			"preco_carbono_brl_t": c.pct / 100 * 5614.30 / (total / 1000),
+		})
+		if rr := resumoDe(r); rr["veredito"] != c.veredito || !strings.Contains(rr["veredito_base"].(string), "do valor da compra") {
+			t.Fatalf("peso de %v%%: esperava %s, veio %v", c.pct, c.veredito, rr)
+		}
+	}
+
+	// Documento em dólar: sem custo com carbono, sem veredito.
+	usd := estimar(map[string]any{"numero": pedidoEmDolar, "itens": []map[string]any{item(10, 0.9)}})
+	conferirPremissas("dólar", usd)
+	if _, tem := resumoDe(usd)["veredito"]; tem {
+		t.Fatalf("documento em dólar não devia ter veredito: %v", resumoDe(usd))
+	}
+	if _, tem := usd["itens"].([]any)[0].(map[string]any)["valor_fmt"]; tem {
+		t.Fatalf("item em dólar não devia ter valor_fmt: %v", usd["itens"])
+	}
+
+	// Requisição sem fornecedor: falta o transporte, com motivo.
+	rq := estimar(map[string]any{"tipo": "requisicao", "numero": "10955121", "itens": []map[string]any{item(10, 0.9)}})
+	conferirPremissas("requisição", rq)
+	if f, _ := resumoDe(rq)["falta_transporte"].(map[string]any); f == nil || !strings.Contains(f["motivo"].(string), "fornecedor") {
+		t.Fatalf("falta_transporte: %v", resumoDe(rq))
+	}
+	if s := rq["como_responder"].(string); !strings.Contains(s, "falta o transporte") {
+		t.Fatalf("como_responder sem o aviso do transporte: %q", s)
+	}
+
+	// Confiança do resumo.
+	for _, c := range []struct {
+		confianca float64
+		esperado  string
+	}{{0.9, "alta"}, {0.6, "media"}, {0.3, "baixa"}} {
+		r := estimar(map[string]any{"numero": "29594155", "itens": []map[string]any{item(10, c.confianca)}})
+		if got := resumoDe(r)["confianca"]; got != c.esperado {
+			t.Fatalf("confiança %v: esperava %s, veio %v", c.confianca, c.esperado, got)
+		}
+	}
+}
+
+func TestFaixasDoCarbonoPorVariavel(t *testing.T) {
+	novoDataHubFake(t)
+	fakePTAX(t)
+	faixas := func() map[string]any {
+		cs := connect(t, newTestServer(t, "require").URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+		r := callJSON(t, cs, "esg_estimar_co2_do_pedido", map[string]any{
+			"numero": "29594155",
+			"itens":  []map[string]any{{"item": 10, "naics": "334513", "peso_kg_por_unidade": 2.0, "confianca": 0.8}},
+		})
+		return r["resumo"].(map[string]any)["faixas"].(map[string]any)
+	}
+
+	t.Setenv("FAIXA_CARBONO_BAIXO_PCT", "2")
+	t.Setenv("FAIXA_CARBONO_ALTO_PCT", "10")
+	if f := faixas(); f["baixo_ate_pct"].(float64) != 2 || f["alto_a_partir_pct"].(float64) != 10 || f["origem"] != "padrao" {
+		t.Fatalf("faixas por variável: %v", f)
+	}
+
+	// Baixo maior ou igual ao alto, ou valor inválido: volta ao padrão.
+	for _, c := range [][2]string{{"10", "2"}, {"abc", "5"}} {
+		t.Setenv("FAIXA_CARBONO_BAIXO_PCT", c[0])
+		t.Setenv("FAIXA_CARBONO_ALTO_PCT", c[1])
+		if f := faixas(); f["baixo_ate_pct"].(float64) != 1 || f["alto_a_partir_pct"].(float64) != 5 {
+			t.Fatalf("faixas %v deviam voltar ao padrão: %v", c, f)
+		}
 	}
 }
 

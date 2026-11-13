@@ -37,6 +37,7 @@ func Register(s *mcp.Server, version string) {
 		tenantClaim:  os.Getenv("TENANT_CLAIM"),
 		tenantFiltro: strings.ToLower(os.Getenv("TENANT_FILTRO")),
 		precoCarbono: precoCarbonoDoAmbiente(),
+		faixas:       faixasDoAmbiente(),
 	}
 	registerCO2(s, deps)
 	registerRecomendacao(s, deps)

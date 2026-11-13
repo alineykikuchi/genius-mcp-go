@@ -342,6 +342,7 @@ const (
 	fimComoResponder = "Use os valores _fmt como vieram; não recalcule nem invente valores. " +
 		"Chame o resultado de 'custo com carbono', nunca de 'custo total'."
 	ofertaCarbono = "Ofereça ver alternativas com menos CO2e ou recalcular com outro preço por tonelada, em reais."
+	semPremissas  = "Não mostre a lista de premissas nem metodologia; só se o usuário pedir."
 )
 
 // fraseDoPreco diz como chamar o preço do carbono na resposta.
@@ -392,7 +393,7 @@ func comoResponderDocumento(doc CarbonoDocumento, precoIncomum, confiancaBaixa b
 			"O valor do pedido não foi informado: mostre só o CO2e e o valor do carbono; não cite custo com carbono nem percentual.")
 	}
 	partes = append(partes, frasesExtras(precoIncomum, confiancaBaixa)...)
-	partes = append(partes, ofertaCarbono)
+	partes = append(partes, ofertaCarbono, semPremissas)
 	return numerar(partes)
 }
 
@@ -445,11 +446,11 @@ func comoResponderComparacao(out PrecificarOut, alternativaFora, precoIncomum, c
 				"com paga_menos_emite_mais, enquanto valer menos. Com melhor_nos_dois, diga que compensa a qualquer preço de carbono; com pior_nos_dois, que não compensa.", ref))
 	}
 
-	partes = append(partes, "Uma frase de premissa. "+fraseDoPreco(out.PrecoCarbono)+" Use 'cerca de' ou 'estimado' junto ao CO2e.")
+	partes = append(partes, fraseDoPreco(out.PrecoCarbono)+" Use 'cerca de' ou 'estimado' junto ao CO2e.")
 	if alternativaFora {
 		partes = append(partes, "Diga quais alternativas ficaram fora da comparação e por quê, conforme o campo avisos; se a referência mudou, diga contra qual alternativa as diferenças foram calculadas.")
 	}
 	partes = append(partes, frasesExtras(precoIncomum, confiancaBaixa)...)
-	partes = append(partes, "Ofereça recalcular com outro preço por tonelada, em reais.")
+	partes = append(partes, "Ofereça recalcular com outro preço por tonelada, em reais.", semPremissas)
 	return numerar(partes)
 }

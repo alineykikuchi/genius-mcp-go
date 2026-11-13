@@ -395,7 +395,7 @@ func comoResponderRecomendacao(temPeso, temDelta, precoDoUsuario, precoIncomum b
 		"Diga quem já vendeu à empresa do usuário (ja_vendeu_a_sua_empresa).",
 		"Esta lista não traz preço dos fornecedores. Não compare custo com carbono aqui; para isso, peça os preços ao comprador e use esg_precificar_carbono.")
 	partes = append(partes, frasesExtras(precoIncomum && temDelta, false)...)
-	partes = append(partes, "Apresente as premissas em uma ou duas frases. Não recalcule nem invente valores.")
+	partes = append(partes, "Não mostre premissas nem metodologia; só se o usuário pedir. Não recalcule nem invente valores.")
 	return numerar(partes)
 }
 
