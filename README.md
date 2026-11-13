@@ -52,6 +52,8 @@ No Genius, peça: **"recomende fornecedores alternativos com menor emissão para
 
 Parâmetros opcionais: `peso_co2` (padrão 0,3), `modal` e `top_n` (padrão 10).
 
+Local de entrega: a tool usa o do cabeçalho do documento e, sem ele, o dos itens buscados; se o comprador informar a cidade no chat, o Genius passa `destino_municipio` e `destino_uf`, que têm prioridade e valem só para a chamada (`destino_origem` diz de onde veio o destino).
+
 Limites:
 
 - **Só Trunk.** Os resolvers do recomendador não filtram por tenant: o score é calculado sobre o histórico de pedidos de todos os clientes. A tool não devolve preço nem descrição de pedidos de outros clientes, mas o flow é um protótipo e não deve ser apontado para dados reais.
