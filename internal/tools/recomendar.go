@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"genius-mcp-go/internal/carbono"
 	"genius-mcp-go/internal/co2"
 	"genius-mcp-go/internal/datahub"
 	"genius-mcp-go/internal/refdata"
@@ -28,7 +29,7 @@ func registerRecomendacao(s *mcp.Server, d co2Deps) {
 			"Primeiro chame sem itens: a resposta traz os itens do documento. Para cada item, monte o nucleo: alternativas de palavras da descrição que identificam " +
 			"o item (ex.: [[\"CANETA\"],[\"BIC\",\"CRISTAL\"]]), uma palavra por elemento, sem código nem medida. No máximo 12 " +
 			"alternativas somando todos os itens. Informe também o peso em kg por unidade, se já tiver estimado. " +
-			"Ao responder ao usuário, apresente sempre as premissas.",
+			"Siga o campo como_responder da resposta.",
 	}, d.recomendar)
 }
 
@@ -48,6 +49,8 @@ type RecomendarIn struct {
 	PesoCO2 *float64    `json:"peso_co2,omitempty" jsonschema:"peso do CO2 do frete no score final, de 0 a 1 (padrão 0.3); o restante é o score do recomendador"`
 	Modal   string      `json:"modal,omitempty" jsonschema:"rodoviario (padrão), ferroviario, cabotagem ou aereo"`
 	TopN    int         `json:"top_n,omitempty" jsonschema:"quantos fornecedores devolver (padrão 10, máximo 50)"`
+
+	PrecoCarbonoBRLT *float64 `json:"preco_carbono_brl_t,omitempty" jsonschema:"preço do carbono em reais por tonelada, se o usuário informar; ausente usa o padrão"`
 }
 
 type FornecedorAtual struct {
@@ -76,6 +79,13 @@ type Alternativa struct {
 	PrazoMedioDias      *float64 `json:"prazo_medio_dias,omitempty"`
 	PctNoPrazo          *float64 `json:"pct_no_prazo,omitempty"`
 	JaVendeuAoComprador bool     `json:"ja_vendeu_a_sua_empresa"`
+
+	// Carbono do frete evitado contra o fornecedor atual, em reais: positivo
+	// quando a alternativa emite menos. Só existe quando o delta existe.
+	CarbonoEvitadoBRL *float64 `json:"carbono_frete_evitado_brl,omitempty"`
+	CarbonoEvitadoFmt string   `json:"carbono_frete_evitado_fmt,omitempty"`
+	CO2FreteFmt       string   `json:"co2_frete_fmt,omitempty"`
+	DeltaCO2Fmt       string   `json:"delta_co2_frete_fmt,omitempty"`
 }
 
 type PesosRecomendacao struct {
@@ -95,10 +105,18 @@ type RecomendarOut struct {
 	FornecedorAtual  FornecedorAtual       `json:"fornecedor_atual"`
 	Alternativas     []Alternativa         `json:"alternativas"`
 	Premissas        []string              `json:"premissas"`
+
+	PrecoCarbono  *PrecoCarbono `json:"preco_carbono,omitempty"`
+	ComoResponder string        `json:"como_responder"`
 }
 
 func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in RecomendarIn) (*mcp.CallToolResult, RecomendarOut, error) {
 	out := RecomendarOut{}
+
+	precoCarbono, avisosPreco, err := d.resolverPrecoCarbono(in.PrecoCarbonoBRLT)
+	if err != nil {
+		return nil, out, err
+	}
 
 	pesoCO2 := 0.3
 	if in.PesoCO2 != nil {
@@ -152,6 +170,7 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		out.ProximoPasso = "Para cada item, monte o nucleo (alternativas de palavras da descrição) e, se puder, estime o peso em kg de uma unidade. " +
 			"Depois chame esg_recomendar_fornecedores de novo com o mesmo tipo, o mesmo numero e a lista de itens."
 		out.Premissas = []string{}
+		out.ComoResponder = "Ainda não há fornecedores para apresentar: siga o campo proximo_passo e chame a tool de novo com os itens."
 		return nil, out, nil
 	}
 
@@ -306,8 +325,70 @@ func (d co2Deps) recomendar(ctx context.Context, req *mcp.CallToolRequest, in Re
 		co2.FatorSinuosidade, co2.DistanciaMinimaKm, modal, m, fatorModal, co2.FonteModal))
 	premissas.add("O CO2 do produto não entra na comparação: no método por gasto ele não diferencia fornecedores do mesmo item. Entre fornecedores, o que muda é o frete, que costuma ser parcela pequena do total.")
 	premissas.add("Peso dos itens estimado por IA. Resultado de triagem: não substitui inventário de emissões auditado nem a homologação do fornecedor.")
+
+	// Carbono do frete em reais: só quando há peso da carga (CO2 do frete em kg).
+	temDelta := false
+	if out.CargaKg != nil {
+		maiorKg := 0.0
+		if out.FornecedorAtual.CO2FreteKg != nil {
+			maiorKg = *out.FornecedorAtual.CO2FreteKg
+		}
+		for _, a := range out.Alternativas {
+			if a.CO2FreteKg != nil {
+				maiorKg = max(maiorKg, *a.CO2FreteKg)
+			}
+		}
+		emT := carbono.UsarToneladas(maiorKg)
+		for i := range out.Alternativas {
+			a := &out.Alternativas[i]
+			if a.CO2FreteKg != nil {
+				a.CO2FreteFmt = carbono.CO2e(*a.CO2FreteKg, emT)
+			}
+			if a.DeltaCO2Kg != nil {
+				temDelta = true
+				a.DeltaCO2Fmt = carbono.CO2eComSinal(*a.DeltaCO2Kg, emT)
+				a.CarbonoEvitadoBRL = ptr(arred(-*a.DeltaCO2Kg / 1000 * precoCarbono.ValorBRLPorT))
+				a.CarbonoEvitadoFmt = carbono.BRL(*a.CarbonoEvitadoBRL)
+			}
+		}
+		out.PrecoCarbono = &precoCarbono
+		for _, p := range premissasCarbono(precoCarbono, false) {
+			premissas.add(p)
+		}
+		for _, a := range avisosPreco {
+			premissas.add(a)
+		}
+	}
+	out.ComoResponder = comoResponderRecomendacao(out.CargaKg != nil, temDelta, len(avisosPreco) > 0)
 	out.Premissas = premissas.lista
 	return nil, out, nil
+}
+
+// comoResponderRecomendacao monta a orientação de resposta da recomendação.
+// temPeso: há CO2 do frete em kg. temDelta: há fornecedor atual para comparar.
+func comoResponderRecomendacao(temPeso, temDelta, precoIncomum bool) string {
+	var partes []string
+	switch {
+	case !temPeso:
+		partes = append(partes, "O CO2e em kg não foi calculado porque falta o peso; apresente só a ordem por distância, "+
+			"em uma tabela curta com Fornecedor, Origem e Distância.")
+	case !temDelta:
+		partes = append(partes,
+			"Comece pela alternativa com menor CO2e de frete que ainda está bem colocada (posicao), dizendo o CO2e do frete (co2_frete_fmt). "+
+				"Não há fornecedor atual para comparar: não cite CO2e evitado nem carbono evitado.",
+			"Mostre uma tabela curta com Fornecedor, Origem, Distância e CO2e do frete.")
+	default:
+		partes = append(partes,
+			"Comece pela alternativa com menor CO2e de frete que ainda está bem colocada (posicao), dizendo quanto CO2e evita contra o fornecedor atual (delta_co2_frete_fmt) "+
+				"e quanto isso vale em carbono (carbono_frete_evitado_fmt), valor de referência que não é cobrado.",
+			"Mostre uma tabela curta com Fornecedor, Origem, Distância, CO2e do frete e Carbono evitado.")
+	}
+	partes = append(partes,
+		"Diga quem já vendeu à empresa do usuário (ja_vendeu_a_sua_empresa).",
+		"Esta lista não traz preço dos fornecedores. Não compare custo com carbono aqui; para isso, peça os preços ao comprador e use esg_precificar_carbono.")
+	partes = append(partes, frasesExtras(precoIncomum && temPeso, false)...)
+	partes = append(partes, "Apresente as premissas em uma ou duas frases. Não recalcule nem invente valores.")
+	return numerar(partes)
 }
 
 // limparNucleo normaliza as alternativas e descarta as vazias.

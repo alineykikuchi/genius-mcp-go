@@ -99,6 +99,87 @@ func TestRecomendarFornecedoresReordenaPeloCO2(t *testing.T) {
 	}
 }
 
+func TestRecomendarFornecedoresMostraOCarbonoEvitado(t *testing.T) {
+	novoDataHubFake(t)
+	ts := newTestServer(t, "require")
+	cs := connect(t, ts.URL, jwtDoUsuario(map[string]any{"tenantId": 1920633}))
+	recomendar := func(peso float64, extra map[string]any) map[string]any {
+		item := map[string]any{"item": 10, "nucleo": [][]string{{"rotametro"}}}
+		if peso > 0 {
+			item["peso_kg_por_unidade"] = peso
+		}
+		args := map[string]any{"numero": "29594155", "itens": []map[string]any{item}}
+		for k, v := range extra {
+			args[k] = v
+		}
+		return callJSON(t, cs, "esg_recomendar_fornecedores", args)
+	}
+	// Cada alternativa com delta traz o carbono evitado = −delta / 1000 × preço.
+	conferir := func(r map[string]any, preco float64) {
+		t.Helper()
+		comDelta := 0
+		for _, v := range r["alternativas"].([]any) {
+			a := v.(map[string]any)
+			delta, tem := a["delta_co2_frete_kg_vs_atual"].(float64)
+			if !tem {
+				continue
+			}
+			comDelta++
+			evitado, ok := a["carbono_frete_evitado_brl"].(float64)
+			if esperado := -delta / 1000 * preco; !ok || evitado < esperado-0.006 || evitado > esperado+0.006 {
+				t.Fatalf("carbono evitado: veio %v, esperava ~%v: %v", a["carbono_frete_evitado_brl"], esperado, a)
+			}
+			if a["carbono_frete_evitado_fmt"] == nil || a["co2_frete_fmt"] == nil || a["delta_co2_frete_fmt"] == nil {
+				t.Fatalf("campos _fmt faltando: %v", a)
+			}
+		}
+		if comDelta != 3 {
+			t.Fatalf("esperava 3 alternativas com delta, vieram %d", comDelta)
+		}
+	}
+
+	// Carga de 3 un × 2.000 kg, para o frete dar valores visíveis.
+	r := recomendar(2000, nil)
+	conferir(r, 500)
+	if r["preco_carbono"].(map[string]any)["origem"] != "padrao" || !contemTexto(r["premissas"], "não é cobrado") {
+		t.Fatalf("preço padrão: %v", r["preco_carbono"])
+	}
+	// O fornecedor perto emite menos que o atual: carbono evitado positivo.
+	if a0 := r["alternativas"].([]any)[0].(map[string]any); a0["fornecedor"] != "PERTO LTDA" || a0["carbono_frete_evitado_brl"].(float64) <= 0 ||
+		!strings.HasPrefix(a0["delta_co2_frete_fmt"].(string), "−") {
+		t.Fatalf("fornecedor perto: %v", a0)
+	}
+	if s, _ := r["como_responder"].(string); !strings.Contains(s, "carbono_frete_evitado_fmt") || !strings.Contains(s, "esg_precificar_carbono") {
+		t.Fatalf("como_responder: %q", s)
+	}
+
+	// Preço informado: valores recalculados.
+	u := recomendar(2000, map[string]any{"preco_carbono_brl_t": 200})
+	conferir(u, 200)
+	if u["preco_carbono"].(map[string]any)["origem"] != "usuario" {
+		t.Fatalf("preço informado: %v", u["preco_carbono"])
+	}
+
+	// Sem peso: sem carbono evitado, e como_responder avisa.
+	s := recomendar(0, nil)
+	for _, v := range s["alternativas"].([]any) {
+		a := v.(map[string]any)
+		for _, campo := range []string{"carbono_frete_evitado_brl", "carbono_frete_evitado_fmt", "co2_frete_fmt", "delta_co2_frete_fmt"} {
+			if _, tem := a[campo]; tem {
+				t.Fatalf("sem peso não devia trazer %s: %v", campo, a)
+			}
+		}
+	}
+	if txt, _ := s["como_responder"].(string); !strings.Contains(txt, "falta o peso") {
+		t.Fatalf("como_responder sem a parte do peso ausente: %q", txt)
+	}
+
+	// Preço negativo: erro da tool.
+	if msg := erroDaTool(t, cs, "esg_recomendar_fornecedores", map[string]any{"numero": "29594155", "preco_carbono_brl_t": -1}); !strings.Contains(msg, "reais por tonelada") {
+		t.Fatalf("mensagem: %s", msg)
+	}
+}
+
 func TestRecomendarFornecedoresEntradaInvalida(t *testing.T) {
 	dh := novoDataHubFake(t)
 	ts := newTestServer(t, "require")
