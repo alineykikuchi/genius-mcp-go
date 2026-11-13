@@ -36,9 +36,11 @@ func Register(s *mcp.Server, version string) {
 		http:         &http.Client{Timeout: 15 * time.Second},
 		tenantClaim:  os.Getenv("TENANT_CLAIM"),
 		tenantFiltro: strings.ToLower(os.Getenv("TENANT_FILTRO")),
+		precoCarbono: precoCarbonoDoAmbiente(),
 	}
 	registerCO2(s, deps)
 	registerRecomendacao(s, deps)
+	registerCarbono(s, deps)
 }
 
 // ---- ping ------------------------------------------------------------------

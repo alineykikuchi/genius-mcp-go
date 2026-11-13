@@ -40,6 +40,9 @@ type co2Deps struct {
 	// tenantFiltro: "off" desliga o filtro por tenant (TENANT_FILTRO). Qualquer
 	// outro valor mantém o filtro obrigatório.
 	tenantFiltro string
+	// precoCarbono: preço padrão do carbono, em reais por tonelada de CO2e
+	// (PRECO_CARBONO_BRL_T). Zero = carbono.PrecoPadraoBRLT.
+	precoCarbono float64
 }
 
 func registerCO2(s *mcp.Server, d co2Deps) {

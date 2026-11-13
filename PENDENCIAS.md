@@ -25,3 +25,13 @@ Levantadas no primeiro teste da tool de estimativa de CO2 no Genius (13/11/2026)
 - **Problema:** o fator USEEIO é em kg CO2e por US$ de 2022, e a conversão usa a PTAX da data de envio do pedido, sem deflacionar. A premissa exibida não declara isso.
 - **O que fazer:** declarar a simplificação nas premissas (mínimo) ou aplicar um deflator do dólar de 2022 para a data do pedido.
 - [ ] Resolvido
+
+## 5. Precificação do carbono: campos da alternativa ficaram opcionais (desvio do plano 1)
+
+- **O que mudou:** o plano 1 (`docs/precificacao-carbono/plano-1-tool-precificar-carbono.md`) declara `rotulo`, `valor_brl` e `co2e_kg` de cada alternativa de `esg_precificar_carbono` sem `omitempty`. Com isso o SDK do MCP marca os três como obrigatórios no schema e recusa a chamada, com erro genérico de validação, antes de a tool rodar. As regras 5 e 6 do próprio plano (alternativa sem valor ou sem CO2e fica fora da comparação, com aviso; rótulo vazio vira "Alternativa N") não tinham como funcionar. Os três campos passaram a ser opcionais no schema (`internal/tools/carbono.go`, `AlternativaCarbonoIn`). Decisão tomada em 13/11/2026, durante a implementação.
+- **O que isso influencia:**
+  - O schema que o Genius lê não diz mais que valor e CO2e são obrigatórios em cada alternativa. O modelo pode mandar uma alternativa incompleta, e a tool responde com a comparação das demais e um aviso com o rótulo da que ficou fora, em vez de um erro. Se o agente não repassar o aviso, o comprador pode não perceber que um fornecedor saiu da comparação.
+  - Se a alternativa incompleta for a primeira (a referência), a referência passa a ser a próxima alternativa completa. As diferenças e o preço de virada são calculados contra ela.
+  - Com menos de duas alternativas completas, a tool continua devolvendo erro pedindo os dois dados.
+- **O que fazer:** validar no Genius uma comparação com uma alternativa sem preço e conferir se a resposta cita o aviso. Se o PO preferir erro em vez de comparação parcial, basta voltar as três tags ao texto do plano e remover os testes desse caso.
+- [ ] Validado pelo PO
